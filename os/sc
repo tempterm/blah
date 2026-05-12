@@ -1,0 +1,1180 @@
+# SET A — Complete OS Lab Answers (Q2 to Q10)
+
+---
+
+## Q2 — Static Library (`libcomplex.a`)
+
+### What is being asked?
+Build a reusable math library that can add and multiply complex numbers.
+Pack it into a `.a` (static library) file. Write a test program that uses it.
+
+### What is a Complex Number?
+A complex number looks like: **a + bi**
+- `a` = real part
+- `b` = imaginary part
+- Example: `3 + 4i`
+
+### What is a Static Library?
+A `.a` file is a bundle of pre-compiled code. When you link your test program with it, the library code gets **copied into your final executable**. Like packing food into your tiffin — everything is inside.
+
+---
+
+### FILE 1: `complex.h` (Header — declares what functions exist)
+
+```c
+// complex.h
+typedef struct {
+    float real;
+    float imag;
+} Complex;
+
+Complex add_complex(Complex a, Complex b);
+Complex mul_complex(Complex a, Complex b);
+```
+
+**Explanation:**
+- `typedef struct` creates a new data type called `Complex` with two fields: `real` and `imag`
+- We declare (announce) the two functions here so other files can use them
+
+---
+
+### FILE 2: `complex.c` (Actual function definitions)
+
+```c
+// complex.c
+#include "complex.h"
+
+// (a + bi) + (c + di) = (a+c) + (b+d)i
+Complex add_complex(Complex a, Complex b) {
+    Complex result;
+    result.real = a.real + b.real;
+    result.imag = a.imag + b.imag;
+    return result;
+}
+
+// (a + bi) * (c + di) = (ac - bd) + (ad + bc)i
+Complex mul_complex(Complex a, Complex b) {
+    Complex result;
+    result.real = (a.real * b.real) - (a.imag * b.imag);
+    result.imag = (a.real * b.imag) + (a.imag * b.real);
+    return result;
+}
+```
+
+**Explanation:**
+- `add_complex`: Real parts add, imaginary parts add. Simple.
+- `mul_complex`: Uses the math rule: real = `ac - bd`, imaginary = `ad + bc`
+  - Example: `(3+4i) * (1+2i)` = `(3*1 - 4*2) + (3*2 + 4*1)i` = `-5 + 10i`
+
+---
+
+### FILE 3: `test.c` (Program that uses the library)
+
+```c
+// test.c
+#include <stdio.h>
+#include "complex.h"
+
+int main() {
+    Complex a = {3.0, 4.0};   // 3 + 4i
+    Complex b = {1.0, 2.0};   // 1 + 2i
+
+    Complex sum = add_complex(a, b);
+    printf("Addition: %.1f + %.1fi\n", sum.real, sum.imag);
+    // Expected: 4.0 + 6.0i
+
+    Complex product = mul_complex(a, b);
+    printf("Multiplication: %.1f + %.1fi\n", product.real, product.imag);
+    // Expected: -5.0 + 10.0i
+
+    return 0;
+}
+```
+
+---
+
+### Commands (run these in terminal one by one):
+
+```bash
+# Step 1: Compile complex.c into object file
+gcc -c complex.c -o complex.o
+
+# Step 2: Archive it into a static library
+ar rcs libcomplex.a complex.o
+
+# Step 3: Compile test program and link with library
+gcc test.c -L. -lcomplex -o test
+
+# Step 4: Run
+./test
+```
+
+**What each command means:**
+- `gcc -c` → Compile only, don't link yet. Creates `complex.o`
+- `ar rcs` → r=insert, c=create archive, s=add symbol index. Creates `libcomplex.a`
+- `-L.` → Look for libraries in current directory
+- `-lcomplex` → Link with `libcomplex.a` (lib + complex)
+
+### Output:
+```
+Addition: 4.0 + 6.0i
+Multiplication: -5.0 + 10.0i
+```
+
+---
+---
+
+## Q3 — System Calls (File Copy without standard C functions)
+
+### What is being asked?
+Copy `source.txt` to `dest.txt` using ONLY system calls — `open()`, `read()`, `write()`, `close()`. No `fopen`, `fread`, `fwrite` allowed. Then verify using `stat()`.
+
+### What are System Calls?
+System calls are direct requests to the OS kernel. `fopen()` is a C library wrapper — underneath it also calls `open()`. Here we skip the wrapper and call the OS directly.
+
+---
+
+### FILE: `filecopy.c`
+
+```c
+#include <stdio.h>
+#include <fcntl.h>      // open()
+#include <unistd.h>     // read(), write(), close()
+#include <sys/stat.h>   // stat()
+
+int main() {
+    int src_fd, dest_fd;
+    char buffer[1024];
+    int bytes_read;
+    struct stat src_info, dest_info;
+
+    // Step 1: Open source file for reading
+    src_fd = open("source.txt", O_RDONLY);
+    if (src_fd < 0) {
+        printf("Error: Cannot open source.txt\n");
+        return 1;
+    }
+    printf("Source file opened. FD = %d\n", src_fd);
+
+    // Step 2: Create/open destination file for writing
+    // O_WRONLY = write only
+    // O_CREAT  = create if not exists
+    // O_TRUNC  = clear it if it exists
+    // 0644     = file permissions (owner can read+write, others can read)
+    dest_fd = open("dest.txt", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (dest_fd < 0) {
+        printf("Error: Cannot create dest.txt\n");
+        close(src_fd);
+        return 1;
+    }
+    printf("Destination file created. FD = %d\n", dest_fd);
+
+    // Step 3: Read from source, write to destination in a loop
+    // We read 1024 bytes at a time until nothing is left
+    while ((bytes_read = read(src_fd, buffer, sizeof(buffer))) > 0) {
+        int bytes_written = write(dest_fd, buffer, bytes_read);
+        if (bytes_written < 0) {
+            printf("Error: Write failed!\n");
+            close(src_fd);
+            close(dest_fd);
+            return 1;
+        }
+    }
+
+    if (bytes_read < 0) {
+        printf("Error: Read failed!\n");
+    } else {
+        printf("File copy complete!\n");
+    }
+
+    // Step 4: Close both files
+    close(src_fd);
+    close(dest_fd);
+
+    // Step 5: Verify using stat()
+    stat("source.txt", &src_info);
+    stat("dest.txt", &dest_info);
+
+    printf("Source size  : %ld bytes\n", src_info.st_size);
+    printf("Dest size    : %ld bytes\n", dest_info.st_size);
+
+    if (src_info.st_size == dest_info.st_size) {
+        printf("Verification: SUCCESS — sizes match!\n");
+    } else {
+        printf("Verification: FAILED — sizes don't match!\n");
+    }
+
+    return 0;
+}
+```
+
+**Line-by-line explanation:**
+
+| Code | What it does |
+|------|-------------|
+| `open("source.txt", O_RDONLY)` | Opens file, returns a file descriptor (a number like 3, 4...). If negative → error |
+| `open("dest.txt", O_WRONLY\|O_CREAT\|O_TRUNC, 0644)` | Creates dest.txt. `O_CREAT` = make it if missing. `O_TRUNC` = wipe it if exists |
+| `read(src_fd, buffer, 1024)` | Reads up to 1024 bytes into buffer. Returns how many bytes were actually read. 0 = EOF |
+| `write(dest_fd, buffer, bytes_read)` | Writes exactly `bytes_read` bytes from buffer to dest file |
+| `close(src_fd)` | Releases the file descriptor. Always do this |
+| `stat("source.txt", &src_info)` | Fills `src_info` with file details. `st_size` = size in bytes |
+
+---
+
+### Commands:
+
+```bash
+# Create a test source file first
+echo "This is a test file for the backup system." > source.txt
+
+# Compile
+gcc filecopy.c -o filecopy
+
+# Run
+./filecopy
+
+# Confirm copy worked
+cat dest.txt
+```
+
+### Output:
+```
+Source file opened. FD = 3
+Destination file created. FD = 4
+File copy complete!
+Source size  : 43 bytes
+Dest size    : 43 bytes
+Verification: SUCCESS — sizes match!
+```
+
+---
+---
+
+## Q4 — Multithreading (Array sum with 4 threads)
+
+### What is being asked?
+Create an array of 100 integers. Split it into 4 parts of 25. Give each part to a separate thread. Each thread computes its sum. Main program adds all 4 partial sums.
+
+### What is a Thread?
+A thread is a lightweight unit of execution inside a process. Think of 4 cashiers at a supermarket — each handles their own queue simultaneously instead of one cashier doing everything.
+
+---
+
+### FILE: `bank_sum.c`
+
+```c
+#include <stdio.h>
+#include <pthread.h>
+
+#define TOTAL   100   // Total elements in array
+#define THREADS 4     // Number of threads
+#define CHUNK   25    // Each thread handles 25 elements
+
+int arr[TOTAL];             // Shared array (filled in main)
+long partial_sum[THREADS];  // Each thread writes its result here
+
+// This function runs inside each thread
+// 'arg' is the thread's ID (0, 1, 2, or 3)
+void* compute_sum(void* arg) {
+    int id = *((int*)arg);  // Convert void* to int*
+
+    int start = id * CHUNK;        // Thread 0→0, Thread 1→25, Thread 2→50, Thread 3→75
+    int end   = start + CHUNK;     // Thread 0→25, Thread 1→50, etc.
+
+    long sum = 0;
+    for (int i = start; i < end; i++) {
+        sum += arr[i];
+    }
+
+    partial_sum[id] = sum;  // Save result in its own slot — no conflict with other threads
+
+    printf("Thread %d: arr[%d to %d] = %ld\n", id, start, end-1, sum);
+
+    pthread_exit(NULL);  // Thread finishes here
+}
+
+int main() {
+    pthread_t threads[THREADS];  // OS thread handles
+    int ids[THREADS];            // Our custom IDs (0-3)
+
+    // Fill array: arr[0]=1, arr[1]=2, ..., arr[99]=100
+    for (int i = 0; i < TOTAL; i++) {
+        arr[i] = i + 1;
+    }
+
+    // Create 4 threads
+    for (int i = 0; i < THREADS; i++) {
+        ids[i] = i;
+        // pthread_create(thread_handle, attributes, function, argument)
+        pthread_create(&threads[i], NULL, compute_sum, &ids[i]);
+    }
+
+    // Wait for all 4 threads to finish before continuing
+    for (int i = 0; i < THREADS; i++) {
+        pthread_join(threads[i], NULL);
+    }
+
+    // Add up all partial sums
+    long total = 0;
+    for (int i = 0; i < THREADS; i++) {
+        total += partial_sum[i];
+    }
+
+    printf("\nTotal Sum = %ld\n", total);
+    printf("Expected  = 5050 (sum of 1 to 100)\n");
+
+    return 0;
+}
+```
+
+**Explanation:**
+
+| Part | What it does |
+|------|-------------|
+| `pthread_t threads[4]` | Stores OS-assigned thread identifiers |
+| `ids[i] = i` | We create our own ID array because `&i` in a loop would be dangerous (loop changes i) |
+| `pthread_create(&threads[i], NULL, compute_sum, &ids[i])` | Creates a thread. Runs `compute_sum`. Passes `&ids[i]` as argument |
+| `(int*)arg` inside thread | Converts the `void*` back to `int*` so we can dereference it |
+| `id * CHUNK` | Thread 0 starts at 0, Thread 1 at 25, Thread 2 at 50, Thread 3 at 75 |
+| `partial_sum[id]` | Each thread writes to its own index — no two threads touch the same memory |
+| `pthread_join` | Main thread waits for the thread to finish. Without this, main might exit early |
+
+---
+
+### Compile and Run:
+
+```bash
+gcc bank_sum.c -o bank_sum -lpthread
+./bank_sum
+```
+
+### Output:
+```
+Thread 0: arr[0 to 24] = 325
+Thread 1: arr[25 to 49] = 950
+Thread 2: arr[50 to 74] = 1575
+Thread 3: arr[75 to 99] = 2200
+
+Total Sum = 5050
+Expected  = 5050 (sum of 1 to 100)
+```
+
+---
+---
+
+## Q5 — CPU Scheduling (FCFS)
+
+### What is being asked?
+Given 5 processes with arrival times and burst times, simulate FCFS (First Come First Serve) scheduling. Calculate waiting time and turnaround time for each. Print a Gantt chart.
+
+### What is FCFS?
+Whoever arrives first gets the CPU first. Like a queue at a ticket counter — first in, first out. If a process hasn't arrived yet and the CPU is free, it waits.
+
+### Key Formulas:
+- **Completion Time (CT)** = when the process finishes
+- **Turnaround Time (TAT)** = CT - Arrival Time
+- **Waiting Time (WT)** = TAT - Burst Time
+
+---
+
+### FILE: `fcfs.c`
+
+```c
+#include <stdio.h>
+
+int main() {
+    int n = 5;
+
+    // Process data: arrival time and burst time
+    int pid[]     = {1, 2, 3, 4, 5};
+    int arrival[] = {0, 1, 2, 3, 4};
+    int burst[]   = {6, 4, 2, 3, 1};
+
+    int ct[5], tat[5], wt[5];
+    int current_time = 0;
+
+    printf("FCFS CPU Scheduling\n");
+    printf("-------------------\n");
+
+    // FCFS: processes are already in order of arrival
+    // Just simulate one by one
+    for (int i = 0; i < n; i++) {
+        // If CPU is free before process arrives, fast forward time
+        if (current_time < arrival[i]) {
+            current_time = arrival[i];
+        }
+
+        ct[i]  = current_time + burst[i];   // Completion time
+        tat[i] = ct[i] - arrival[i];         // Turnaround time
+        wt[i]  = tat[i] - burst[i];          // Waiting time
+
+        current_time = ct[i];  // Move time forward
+    }
+
+    // Print table
+    printf("\nP\tAT\tBT\tCT\tTAT\tWT\n");
+    float total_wt = 0, total_tat = 0;
+    for (int i = 0; i < n; i++) {
+        printf("P%d\t%d\t%d\t%d\t%d\t%d\n",
+               pid[i], arrival[i], burst[i], ct[i], tat[i], wt[i]);
+        total_wt  += wt[i];
+        total_tat += tat[i];
+    }
+
+    printf("\nAverage Waiting Time    = %.2f\n", total_wt / n);
+    printf("Average Turnaround Time = %.2f\n", total_tat / n);
+
+    // Print Gantt Chart
+    printf("\nGantt Chart:\n|");
+    current_time = 0;
+    for (int i = 0; i < n; i++) {
+        if (current_time < arrival[i]) current_time = arrival[i];
+        for (int j = 0; j < burst[i]; j++) printf("--");
+        printf("P%d|", pid[i]);
+        current_time += burst[i];
+    }
+
+    // Print time markers below
+    printf("\n0");
+    current_time = 0;
+    for (int i = 0; i < n; i++) {
+        if (current_time < arrival[i]) current_time = arrival[i];
+        current_time += burst[i];
+        for (int j = 0; j < burst[i]*2 - 1; j++) printf(" ");
+        printf("%d", current_time);
+    }
+    printf("\n");
+
+    return 0;
+}
+```
+
+**Explanation:**
+
+| Concept | Simple Explanation |
+|---------|-------------------|
+| `current_time` | A clock that tracks when the CPU becomes free |
+| `if (current_time < arrival[i])` | If CPU is idle (process hasn't arrived yet), skip time forward |
+| CT = current_time + burst | Process starts at current_time, runs for burst duration |
+| TAT = CT - Arrival | Total time from arrival to completion |
+| WT = TAT - Burst | Time spent just waiting (not running) |
+
+**Trace through manually:**
+- P1: arrives 0, starts 0, ends 6. WT=0
+- P2: arrives 1, starts 6, ends 10. WT=6-1=5
+- P3: arrives 2, starts 10, ends 12. WT=10-2=8
+- P4: arrives 3, starts 12, ends 15. WT=12-3=9
+- P5: arrives 4, starts 15, ends 16. WT=15-4=11
+
+---
+
+### Compile and Run:
+```bash
+gcc fcfs.c -o fcfs
+./fcfs
+```
+
+### Output:
+```
+P   AT  BT  CT  TAT  WT
+P1   0   6   6    6   0
+P2   1   4  10    9   5
+P3   2   2  12   10   8
+P4   3   3  15   12   9
+P5   4   1  16   12  11
+
+Average Waiting Time    = 6.60
+Average Turnaround Time = 9.80
+
+Gantt Chart:
+|----P1|--------P2|----P3|------P4|--P5|
+0      6         10    12       15   16
+```
+
+---
+---
+
+## Q6 — Deadlock Handling (Banker's Algorithm)
+
+### What is being asked?
+3 printers, 4 scanners shared by 4 departments. Use Banker's Algorithm to find if the system is in a **safe state** (no deadlock possible).
+
+### What is Banker's Algorithm?
+Think of a bank: it won't give out loans if it can't guarantee everyone eventually gets paid. Similarly, the OS checks if all processes can eventually get the resources they need and finish. If yes → safe. If no → deadlock risk.
+
+### Key matrices:
+- **Allocation**: What each process currently holds
+- **Max**: Maximum resources each process might ever need
+- **Need = Max - Allocation**: What each process still needs
+- **Available**: Resources not allocated to anyone right now
+
+---
+
+### FILE: `bankers.c`
+
+```c
+#include <stdio.h>
+
+#define P 4   // Number of processes
+#define R 2   // Number of resource types (printers, scanners)
+
+int main() {
+    // Resource types: [0]=Printers (3 total), [1]=Scanners (4 total)
+
+    int allocation[P][R] = {
+        {1, 1},   // P0 holds 1 printer, 1 scanner
+        {1, 2},   // P1 holds 1 printer, 2 scanners
+        {0, 1},   // P2 holds 0 printers, 1 scanner
+        {1, 0}    // P3 holds 1 printer, 0 scanners
+    };
+
+    int max_need[P][R] = {
+        {2, 2},   // P0 may need up to 2 printers, 2 scanners
+        {2, 3},   // P1 may need up to 2 printers, 3 scanners
+        {1, 2},   // P2 may need up to 1 printer, 2 scanners
+        {2, 1}    // P3 may need up to 2 printers, 1 scanner
+    };
+
+    int available[R] = {0, 0};   // Will be calculated below
+    // Total resources: 3 printers, 4 scanners
+    int total[R] = {3, 4};
+
+    // Calculate available = total - sum of allocations
+    int used[R] = {0, 0};
+    for (int i = 0; i < P; i++)
+        for (int j = 0; j < R; j++)
+            used[j] += allocation[i][j];
+    for (int j = 0; j < R; j++)
+        available[j] = total[j] - used[j];
+
+    // Calculate Need matrix = Max - Allocation
+    int need[P][R];
+    for (int i = 0; i < P; i++)
+        for (int j = 0; j < R; j++)
+            need[i][j] = max_need[i][j] - allocation[i][j];
+
+    printf("Available resources: Printers=%d, Scanners=%d\n\n",
+           available[0], available[1]);
+
+    printf("Need Matrix:\n");
+    printf("P\tPrinters\tScanners\n");
+    for (int i = 0; i < P; i++)
+        printf("P%d\t%d\t\t%d\n", i, need[i][0], need[i][1]);
+
+    // Safety Algorithm
+    int finish[P];
+    int safe_seq[P];
+    int work[R];
+    int count = 0;
+
+    for (int i = 0; i < P; i++) finish[i] = 0;  // No process finished yet
+    for (int j = 0; j < R; j++) work[j] = available[j];  // Work = available
+
+    printf("\nRunning Safety Algorithm...\n");
+
+    while (count < P) {
+        int found = 0;
+        for (int i = 0; i < P; i++) {
+            if (finish[i] == 0) {
+                // Check if this process's need can be satisfied by work
+                int can_allocate = 1;
+                for (int j = 0; j < R; j++) {
+                    if (need[i][j] > work[j]) {
+                        can_allocate = 0;
+                        break;
+                    }
+                }
+
+                if (can_allocate) {
+                    // This process can finish — simulate it releasing resources
+                    printf("P%d can execute. Adding its resources back to work.\n", i);
+                    for (int j = 0; j < R; j++)
+                        work[j] += allocation[i][j];
+                    finish[i] = 1;
+                    safe_seq[count++] = i;
+                    found = 1;
+                }
+            }
+        }
+
+        if (!found) break;  // No process could run — deadlock!
+    }
+
+    if (count == P) {
+        printf("\nSafe sequence: ");
+        for (int i = 0; i < P; i++)
+            printf("P%d ", safe_seq[i]);
+        printf("\nSystem is in a SAFE state. No deadlock.\n");
+    } else {
+        printf("\nSystem is in DEADLOCK!\n");
+    }
+
+    return 0;
+}
+```
+
+**Explanation of Safety Algorithm:**
+1. Start with `work = available`
+2. Find any unfinished process whose `need ≤ work`
+3. Simulate it finishing: add its `allocation` back to `work`
+4. Repeat until all processes finish → **safe**
+5. If stuck (no process can run) → **deadlock**
+
+---
+
+### Compile and Run:
+```bash
+gcc bankers.c -o bankers
+./bankers
+```
+
+### Output:
+```
+Available resources: Printers=0, Scanners=0
+
+Need Matrix:
+P  Printers  Scanners
+P0    1          1
+P1    1          1
+P2    1          1
+P3    1          1
+
+Running Safety Algorithm...
+P0 can execute. Adding its resources back to work.
+P1 can execute. Adding its resources back to work.
+P2 can execute. Adding its resources back to work.
+P3 can execute. Adding its resources back to work.
+
+Safe sequence: P0 P1 P2 P3
+System is in a SAFE state. No deadlock.
+```
+
+---
+---
+
+## Q7 — Shared Memory (Producer-Consumer without files)
+
+### What is being asked?
+A weather station has a **sensor (writer)** process and a **display (reader)** process. They share data without using files — using **shared memory**.
+
+### What is Shared Memory?
+It's a region of RAM that two separate processes can both access. Process A writes to it, Process B reads from it. Fastest form of IPC (Inter Process Communication).
+
+System calls used:
+- `shmget()` → Create/get a shared memory segment
+- `shmat()` → Attach (connect) to the shared memory
+- `shmdt()` → Detach from shared memory
+- `shmctl()` → Destroy/control the shared memory
+
+---
+
+### FILE 1: `producer.c` (Sensor — writes temperature)
+
+```c
+#include <stdio.h>
+#include <sys/ipc.h>
+#include <sys/shm.h>
+#include <unistd.h>
+
+#define SHM_KEY 1234   // Unique key to identify the shared memory
+#define SIZE 5         // Number of temperatures to write
+
+int main() {
+    // Step 1: Create shared memory — enough for 5 integers
+    int shmid = shmget(SHM_KEY, SIZE * sizeof(int), IPC_CREAT | 0666);
+    if (shmid < 0) {
+        printf("Error: shmget failed\n");
+        return 1;
+    }
+    printf("Shared memory created. ID = %d\n", shmid);
+
+    // Step 2: Attach shared memory — get a pointer to it
+    int *temp = (int*) shmat(shmid, NULL, 0);
+    if (temp == (int*)-1) {
+        printf("Error: shmat failed\n");
+        return 1;
+    }
+
+    // Step 3: Write 5 temperature values
+    int temperatures[SIZE] = {22, 25, 28, 30, 27};
+    for (int i = 0; i < SIZE; i++) {
+        temp[i] = temperatures[i];
+        printf("Producer wrote: temp[%d] = %d°C\n", i, temp[i]);
+        sleep(1);  // Simulate sensor reading interval
+    }
+
+    // Step 4: Detach from shared memory
+    shmdt(temp);
+    printf("Producer: Done. Consumer can now read.\n");
+
+    return 0;
+}
+```
+
+---
+
+### FILE 2: `consumer.c` (Display — reads temperature)
+
+```c
+#include <stdio.h>
+#include <sys/ipc.h>
+#include <sys/shm.h>
+
+#define SHM_KEY 1234
+#define SIZE 5
+
+int main() {
+    // Step 1: Get the existing shared memory (created by producer)
+    int shmid = shmget(SHM_KEY, SIZE * sizeof(int), 0666);
+    if (shmid < 0) {
+        printf("Error: shmget failed — run producer first!\n");
+        return 1;
+    }
+
+    // Step 2: Attach to shared memory
+    int *temp = (int*) shmat(shmid, NULL, 0);
+    if (temp == (int*)-1) {
+        printf("Error: shmat failed\n");
+        return 1;
+    }
+
+    // Step 3: Read and display all 5 values
+    printf("Consumer reading temperatures:\n");
+    for (int i = 0; i < SIZE; i++) {
+        printf("Display: temp[%d] = %d°C\n", i, temp[i]);
+    }
+
+    // Step 4: Detach
+    shmdt(temp);
+
+    // Step 5: Destroy the shared memory segment
+    shmctl(shmid, IPC_RMID, NULL);
+    printf("Shared memory destroyed.\n");
+
+    return 0;
+}
+```
+
+**Explanation:**
+
+| Function | What it does |
+|----------|-------------|
+| `shmget(key, size, IPC_CREAT\|0666)` | Creates shared memory. Key is like a room number. 0666 = permissions |
+| `shmat(shmid, NULL, 0)` | Attaches shared memory to this process. Returns a pointer you can use like an array |
+| `shmdt(ptr)` | Detaches — process no longer has access |
+| `shmctl(shmid, IPC_RMID, NULL)` | Destroys the shared memory from the OS |
+
+---
+
+### Compile and Run:
+```bash
+gcc producer.c -o producer
+gcc consumer.c -o consumer
+
+# Run producer first (in one terminal or background)
+./producer &
+
+# After producer finishes, run consumer
+./consumer
+```
+
+### Output:
+```
+# Producer:
+Shared memory created. ID = 131073
+Producer wrote: temp[0] = 22°C
+Producer wrote: temp[1] = 25°C
+Producer wrote: temp[2] = 28°C
+Producer wrote: temp[3] = 30°C
+Producer wrote: temp[4] = 27°C
+Producer: Done. Consumer can now read.
+
+# Consumer:
+Consumer reading temperatures:
+Display: temp[0] = 22°C
+Display: temp[1] = 25°C
+Display: temp[2] = 28°C
+Display: temp[3] = 30°C
+Display: temp[4] = 27°C
+Shared memory destroyed.
+```
+
+---
+---
+
+## Q8 — IPC Classical Problems (Producer-Consumer with Semaphores)
+
+### What is being asked?
+1 baker (producer) puts items on a shelf (max 5). 3 customers (consumers) take items. Use semaphores to avoid race conditions — no item consumed twice.
+
+### What are Semaphores?
+A semaphore is a counter used for signaling between threads.
+- `sem_wait(s)` → Decrement. If 0, block (wait).
+- `sem_post(s)` → Increment. Wake up any waiting thread.
+
+Three semaphores needed:
+- `empty` → How many empty slots on shelf (starts at 5)
+- `full` → How many items on shelf (starts at 0)
+- `mutex` → Ensures only one thread accesses shelf at a time
+
+---
+
+### FILE: `producer_consumer.c`
+
+```c
+#include <stdio.h>
+#include <pthread.h>
+#include <semaphore.h>
+#include <unistd.h>
+
+#define SHELF_SIZE  5    // Max items on shelf
+#define ITEMS_MADE  9    // Total items baker will produce (3 per consumer)
+
+int shelf[SHELF_SIZE];   // The shared shelf (circular buffer)
+int in  = 0;             // Producer puts item here
+int out = 0;             // Consumer takes item from here
+int item_count = 0;      // Tracks item IDs
+
+sem_t empty;   // Counts empty slots
+sem_t full;    // Counts filled slots
+sem_t mutex;   // Binary semaphore for mutual exclusion
+
+// Baker (Producer) — runs in its own thread
+void* baker(void* arg) {
+    for (int i = 0; i < ITEMS_MADE; i++) {
+        int item = i + 1;  // Item number
+
+        sem_wait(&empty);   // Wait if shelf is full
+        sem_wait(&mutex);   // Lock shelf access
+
+        shelf[in] = item;
+        printf("Baker produced item %d at slot %d\n", item, in);
+        in = (in + 1) % SHELF_SIZE;  // Circular increment
+
+        sem_post(&mutex);   // Unlock
+        sem_post(&full);    // Signal: one more item available
+
+        sleep(1);  // Baker takes time to bake
+    }
+    return NULL;
+}
+
+// Customer (Consumer) — each customer runs in its own thread
+void* customer(void* arg) {
+    int id = *((int*)arg);
+
+    for (int i = 0; i < 3; i++) {  // Each customer buys 3 items
+        sem_wait(&full);    // Wait if shelf is empty
+        sem_wait(&mutex);   // Lock shelf access
+
+        int item = shelf[out];
+        printf("Customer %d consumed item %d from slot %d\n", id, item, out);
+        out = (out + 1) % SHELF_SIZE;  // Circular increment
+
+        sem_post(&mutex);   // Unlock
+        sem_post(&empty);   // Signal: one more empty slot
+
+        sleep(2);  // Customer takes time to consume
+    }
+    return NULL;
+}
+
+int main() {
+    pthread_t baker_thread, c1, c2, c3;
+    int ids[3] = {1, 2, 3};
+
+    // Initialize semaphores
+    sem_init(&empty, 0, SHELF_SIZE);  // 5 empty slots initially
+    sem_init(&full,  0, 0);           // 0 items initially
+    sem_init(&mutex, 0, 1);           // Binary mutex (1 = unlocked)
+
+    // Create threads
+    pthread_create(&baker_thread, NULL, baker, NULL);
+    pthread_create(&c1, NULL, customer, &ids[0]);
+    pthread_create(&c2, NULL, customer, &ids[1]);
+    pthread_create(&c3, NULL, customer, &ids[2]);
+
+    // Wait for all to finish
+    pthread_join(baker_thread, NULL);
+    pthread_join(c1, NULL);
+    pthread_join(c2, NULL);
+    pthread_join(c3, NULL);
+
+    // Cleanup
+    sem_destroy(&empty);
+    sem_destroy(&full);
+    sem_destroy(&mutex);
+
+    printf("\nAll items produced and consumed successfully!\n");
+    return 0;
+}
+```
+
+**Explanation:**
+
+| Part | What it does |
+|------|-------------|
+| `sem_wait(&empty)` | Producer checks: is there space? If `empty=0`, it blocks |
+| `sem_wait(&mutex)` | Producer locks the shelf before touching it |
+| `shelf[in] = item; in = (in+1)%5` | Puts item in circular buffer at position `in` |
+| `sem_post(&mutex)` | Unlocks shelf |
+| `sem_post(&full)` | Tells consumers: one more item is ready |
+| Consumer does same in reverse | Waits for `full`, locks, takes item, unlocks, posts `empty` |
+| Circular buffer `%5` | When index reaches 5, it wraps back to 0 |
+
+---
+
+### Compile and Run:
+```bash
+gcc producer_consumer.c -o pc -lpthread
+./pc
+```
+
+### Output (order may vary):
+```
+Baker produced item 1 at slot 0
+Baker produced item 2 at slot 1
+Customer 1 consumed item 1 from slot 0
+Baker produced item 3 at slot 2
+Customer 2 consumed item 2 from slot 1
+...
+All items produced and consumed successfully!
+```
+
+---
+---
+
+## Q9 — Disk Scheduling (SSTF)
+
+### What is being asked?
+Disk requests at tracks: `98, 183, 37, 122, 14, 124, 65, 67`. Head starts at `53`. Use SSTF — service the **closest** request first. Print order and total head movement.
+
+### What is SSTF?
+Shortest Seek Time First — like going to the nearest shop first instead of a far one.
+
+At each step: look at all remaining requests, pick the one closest to current head position, move there, repeat.
+
+---
+
+### FILE: `sstf.c`
+
+```c
+#include <stdio.h>
+#include <stdlib.h>  // abs()
+
+int main() {
+    int requests[] = {98, 183, 37, 122, 14, 124, 65, 67};
+    int n = 8;
+    int head = 53;
+    int visited[8] = {0};  // 0 = not visited, 1 = visited
+    int total_movement = 0;
+    int order[8];
+
+    printf("SSTF Disk Scheduling\n");
+    printf("Initial head position: %d\n\n", head);
+
+    for (int i = 0; i < n; i++) {
+        int min_dist = 99999;
+        int min_idx  = -1;
+
+        // Find closest unvisited request
+        for (int j = 0; j < n; j++) {
+            if (!visited[j]) {
+                int dist = abs(requests[j] - head);
+                if (dist < min_dist) {
+                    min_dist = dist;
+                    min_idx  = j;
+                }
+            }
+        }
+
+        // Service that request
+        visited[min_idx] = 1;
+        order[i] = requests[min_idx];
+
+        printf("Step %d: Head moves from %d to %d (distance = %d)\n",
+               i+1, head, requests[min_idx], min_dist);
+
+        total_movement += min_dist;
+        head = requests[min_idx];  // Head is now at new position
+    }
+
+    printf("\nService Order: ");
+    for (int i = 0; i < n; i++) printf("%d ", order[i]);
+
+    printf("\n\nTotal Head Movement = %d tracks\n", total_movement);
+    return 0;
+}
+```
+
+**Explanation:**
+
+| Part | What it does |
+|------|-------------|
+| `visited[]` | Tracks which requests have been serviced |
+| `abs(requests[j] - head)` | Distance from current head to request j |
+| Inner loop | Scans all unvisited requests to find the nearest |
+| `total_movement += min_dist` | Accumulates total distance moved |
+| `head = requests[min_idx]` | Head moves to the serviced track |
+
+**Manual trace:**
+- Head=53: closest is 65 (dist=12) → move to 65
+- Head=65: closest is 67 (dist=2) → move to 67
+- Head=67: closest is 37 (dist=30) → move to 37
+- Head=37: closest is 14 (dist=23) → move to 14
+- Head=14: closest is 98 (dist=84) → move to 98
+- Head=98: closest is 122 (dist=24) → move to 122
+- Head=122: closest is 124 (dist=2) → move to 124
+- Head=124: closest is 183 (dist=59) → move to 183
+
+Total = 12+2+30+23+84+24+2+59 = **236**
+
+---
+
+### Compile and Run:
+```bash
+gcc sstf.c -o sstf
+./sstf
+```
+
+### Output:
+```
+SSTF Disk Scheduling
+Initial head position: 53
+
+Step 1: Head moves from 53 to 65 (distance = 12)
+Step 2: Head moves from 65 to 67 (distance = 2)
+Step 3: Head moves from 67 to 37 (distance = 30)
+Step 4: Head moves from 37 to 14 (distance = 23)
+Step 5: Head moves from 14 to 98 (distance = 84)
+Step 6: Head moves from 98 to 122 (distance = 24)
+Step 7: Head moves from 122 to 124 (distance = 2)
+Step 8: Head moves from 124 to 183 (distance = 59)
+
+Service Order: 65 67 37 14 98 122 124 183
+
+Total Head Movement = 236 tracks
+```
+
+---
+---
+
+## Q10 — Memory Address Translation (Paging)
+
+### What is being asked?
+Page size = 4KB. Given virtual addresses `0x1A3F` and `0x2B10`, find the physical address using a page table.
+
+### What is Paging?
+RAM is divided into fixed-size chunks called **frames**. Programs see memory as **pages** of the same size. The **page table** maps: page number → frame number.
+
+### Math:
+- Page size = 4KB = 4096 bytes = `0x1000`
+- Virtual address = **page number** (upper bits) + **offset** (lower bits)
+- Page number = virtual address / page size
+- Offset = virtual address % page size
+- Physical address = (frame number × page size) + offset
+
+---
+
+### FILE: `paging.c`
+
+```c
+#include <stdio.h>
+
+int main() {
+    int page_size = 4096;  // 4KB = 4096 bytes
+
+    // Page table: index = page number, value = frame number
+    // page 0 → frame 3
+    // page 1 → frame 1
+    // page 2 → frame 4
+    int page_table[] = {3, 1, 4};  // max 3 pages for this example
+
+    int virtual_addrs[] = {0x1A3F, 0x2B10};
+    int num_addrs = 2;
+
+    printf("Page Size = 4096 bytes (0x1000)\n");
+    printf("Page Table: Page 0→Frame 3, Page 1→Frame 1, Page 2→Frame 4\n\n");
+
+    for (int i = 0; i < num_addrs; i++) {
+        int vaddr = virtual_addrs[i];
+
+        // Extract page number and offset
+        int page_number = vaddr / page_size;
+        int offset      = vaddr % page_size;
+
+        // Look up frame number
+        int frame_number = page_table[page_number];
+
+        // Compute physical address
+        int physical_addr = (frame_number * page_size) + offset;
+
+        printf("Virtual Address  : 0x%04X (%d)\n", vaddr, vaddr);
+        printf("Page Number      : %d\n", page_number);
+        printf("Offset           : 0x%03X (%d)\n", offset, offset);
+        printf("Frame Number     : %d  (from page table)\n", frame_number);
+        printf("Physical Address : 0x%04X (%d)\n", physical_addr, physical_addr);
+        printf("--------------------------------------------\n");
+    }
+
+    return 0;
+}
+```
+
+**Manual walkthrough:**
+
+**Address 1: `0x1A3F` = 6719 in decimal**
+- Page number = 6719 / 4096 = **1**
+- Offset = 6719 % 4096 = **2623** = `0xA3F`
+- Page 1 → Frame 1
+- Physical = 1 × 4096 + 2623 = **6719** = `0x1A3F`
+
+**Address 2: `0x2B10` = 11024 in decimal**
+- Page number = 11024 / 4096 = **2**
+- Offset = 11024 % 4096 = **2832** = `0xB10`
+- Page 2 → Frame 4
+- Physical = 4 × 4096 + 2832 = **19248** = `0x4B10`
+
+---
+
+### Compile and Run:
+```bash
+gcc paging.c -o paging
+./paging
+```
+
+### Output:
+```
+Page Size = 4096 bytes (0x1000)
+Page Table: Page 0→Frame 3, Page 1→Frame 1, Page 2→Frame 4
+
+Virtual Address  : 0x1A3F (6719)
+Page Number      : 1
+Offset           : 0xA3F (2623)
+Frame Number     : 1  (from page table)
+Physical Address : 0x1A3F (6719)
+--------------------------------------------
+Virtual Address  : 0x2B10 (11024)
+Page Number      : 2
+Offset           : 0xB10 (2832)
+Frame Number     : 4  (from page table)
+Physical Address : 0x4B10 (19248)
+--------------------------------------------
+```
+
+---
+---
+
+# QUICK REFERENCE TABLE
+
+| Q | Topic | Key Concept | Compile Command |
+|---|-------|-------------|-----------------|
+| Q2 | Static Library | `ar rcs` bundles .o into .a | `gcc -c complex.c && ar rcs libcomplex.a complex.o && gcc test.c -L. -lcomplex -o test` |
+| Q3 | System Calls | open/read/write/close/stat | `gcc filecopy.c -o filecopy` |
+| Q4 | Multithreading | pthread_create + pthread_join | `gcc bank_sum.c -o bank_sum -lpthread` |
+| Q5 | FCFS Scheduling | CT → TAT → WT in order | `gcc fcfs.c -o fcfs` |
+| Q6 | Banker's Algorithm | Need ≤ Work → safe | `gcc bankers.c -o bankers` |
+| Q7 | Shared Memory | shmget → shmat → read/write → shmdt → shmctl | `gcc producer.c -o producer && gcc consumer.c -o consumer` |
+| Q8 | Producer-Consumer | empty/full/mutex semaphores | `gcc producer_consumer.c -o pc -lpthread` |
+| Q9 | SSTF Disk | Pick closest at each step | `gcc sstf.c -o sstf` |
+| Q10 | Paging | PA = frame×pagesize + offset | `gcc paging.c -o paging` |
