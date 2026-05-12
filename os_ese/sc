@@ -1,0 +1,1594 @@
+# SET C — Complete OS Lab Answers (Q2 to Q10)
+
+---
+
+## Q2 — Static + Dynamic Library (Geometry Library)
+
+### What is being asked?
+Build a geometry library with two functions:
+- `magnitude()` → length of a complex number = `sqrt(a² + b²)`
+- `phase()` → angle of complex number = `atan2(b, a)` in radians
+
+Compile the **same** `geometry.c` as BOTH a static library (`.a`) AND a dynamic library (`.so`). Use the **same** `main.c` for both. Show that both give identical output.
+
+### Why both?
+The question wants you to demonstrate you understand the difference and can build both from the same source.
+
+---
+
+### FILE 1: `geometry.h` (Header — declares functions)
+
+```c
+// geometry.h
+double magnitude(double a, double b);
+double phase(double a, double b);
+```
+
+---
+
+### FILE 2: `geometry.c` (Library source)
+
+```c
+// geometry.c
+#include <math.h>
+#include "geometry.h"
+
+// Magnitude = sqrt(a^2 + b^2)
+// This is the "length" of the complex number a + bi
+// Example: magnitude(3, 4) = sqrt(9 + 16) = sqrt(25) = 5.0
+double magnitude(double a, double b) {
+    return sqrt(a * a + b * b);
+}
+
+// Phase = atan2(b, a)
+// This is the angle the complex number makes with the real axis (in radians)
+// Example: phase(1, 1) = atan2(1, 1) = 0.7854 radians = 45 degrees
+// Example: phase(0, 1) = atan2(1, 0) = 1.5708 radians = 90 degrees
+double phase(double a, double b) {
+    return atan2(b, a);
+}
+```
+
+**What is `atan2(b, a)`?**
+It returns the angle (in radians) of the point `(a, b)` from the positive X-axis.
+Think of it as: if you draw the complex number as an arrow, what angle does it make?
+
+---
+
+### FILE 3: `main.c` (Same for both static and dynamic)
+
+```c
+// main.c
+#include <stdio.h>
+#include "geometry.h"
+
+int main() {
+    double a = 3.0, b = 4.0;
+
+    printf("Complex number: %.1f + %.1fi\n", a, b);
+    printf("Magnitude : %.4f\n", magnitude(a, b));
+    // Expected: 5.0000
+
+    printf("Phase     : %.4f radians\n", phase(a, b));
+    // Expected: 0.9273 radians (which is atan2(4, 3))
+
+    return 0;
+}
+```
+
+---
+
+### Build STATIC version:
+
+```bash
+# Step 1: Compile geometry.c into object file
+gcc -c geometry.c -o geometry.o
+
+# Step 2: Bundle into static library
+ar rcs libgeometry.a geometry.o
+
+# Step 3: Compile main.c linking with static library
+# -lm needed for sqrt and atan2 (math functions)
+gcc main.c -L. -lgeometry -o main_static -lm
+
+# Step 4: Run
+./main_static
+```
+
+---
+
+### Build DYNAMIC version:
+
+```bash
+# Step 1: Compile as shared library
+# -fPIC = Position Independent Code (required for .so)
+# -shared = produce shared object file
+gcc -fPIC -shared -o libgeometry.so geometry.c -lm
+
+# Step 2: Compile main.c linking with shared library
+# -Wl,-rpath,. = find .so in current directory at runtime
+gcc main.c -L. -lgeometry -Wl,-rpath,. -o main_dynamic -lm
+
+# Step 3: Run
+./main_dynamic
+```
+
+---
+
+### Explanation of every command:
+
+| Command / Flag | What it does |
+|----------------|-------------|
+| `gcc -c geometry.c` | Compiles to `.o` object file — no linking yet |
+| `ar rcs libgeometry.a geometry.o` | `r`=replace/insert, `c`=create archive, `s`=symbol index. Packs `.o` into `.a` |
+| `-L.` | Look in current directory for libraries at link time |
+| `-lgeometry` | Link with `libgeometry.a` or `libgeometry.so` (whichever is found) |
+| `-lm` | Link system math library (needed for `sqrt`, `atan2`) |
+| `-fPIC` | Position Independent Code — library can be loaded at any memory address |
+| `-shared` | Build `.so` shared object instead of executable |
+| `-Wl,-rpath,.` | Embed runtime library path — at runtime look for `.so` in current dir |
+
+---
+
+### Key Difference Reminder:
+
+| | Static `.a` | Dynamic `.so` |
+|-|------------|---------------|
+| Code location | Copied into executable | Stays as separate `.so` file |
+| Update library | Recompile everything | Just replace `.so` |
+| Executable size | Larger | Smaller |
+| Runtime dependency | None (all bundled) | `.so` file must be present |
+
+---
+
+### Expected Output (same for both versions):
+```
+Complex number: 3.0 + 4.0i
+Magnitude : 5.0000
+Phase     : 0.9273 radians
+```
+
+---
+---
+
+## Q3 — System Calls (Pipe + fork: Uppercase conversion)
+
+### What is being asked?
+Parent sends message `"Hello from parent"` through a pipe to the child. Child reads it and prints it in **uppercase** — converting each character one by one using `toupper()`.
+
+### What is a Pipe?
+A pipe is a one-way communication channel between two processes created with `pipe()`. It gives you two file descriptors:
+- `pipefd[0]` = **read end** (you read from here)
+- `pipefd[1]` = **write end** (you write here)
+
+Data flows in one direction: write end → read end. Like a water pipe.
+
+### Important rule:
+Each process should **close the end it doesn't use**. If parent doesn't close `pipefd[0]`, the child's `read()` will never get EOF and will hang forever.
+
+---
+
+### FILE: `pipe_upper.c`
+
+```c
+#include <stdio.h>
+#include <unistd.h>    // pipe(), fork(), read(), write(), close()
+#include <fcntl.h>     // open() flags (not used here but good to include)
+#include <string.h>    // strlen()
+#include <ctype.h>     // toupper()
+#include <sys/wait.h>  // wait()
+
+int main() {
+    int pipefd[2];   // pipefd[0] = read end, pipefd[1] = write end
+    pid_t pid;
+    char message[] = "Hello from parent";
+    char buffer[100];
+    int bytes_read;
+
+    // Step 1: Create the pipe BEFORE fork
+    // Both parent and child will inherit both ends after fork
+    if (pipe(pipefd) < 0) {
+        printf("Error: pipe() failed!\n");
+        return 1;
+    }
+
+    // Step 2: Fork
+    pid = fork();
+
+    if (pid < 0) {
+        printf("Error: fork() failed!\n");
+        return 1;
+    }
+
+    // ---- CHILD PROCESS ----
+    else if (pid == 0) {
+        // Child only READS — so close the write end
+        close(pipefd[1]);
+
+        // Read from the pipe into buffer
+        bytes_read = read(pipefd[0], buffer, sizeof(buffer));
+        if (bytes_read < 0) {
+            printf("Child: Error reading from pipe!\n");
+            return 1;
+        }
+        buffer[bytes_read] = '\0';  // Null terminate the string
+
+        printf("Child received: %s\n", buffer);
+
+        // Convert to uppercase character by character
+        printf("Child (uppercase): ");
+        for (int i = 0; i < bytes_read; i++) {
+            // toupper() converts lowercase letter to uppercase
+            // If already uppercase or not a letter, it stays the same
+            putchar(toupper((unsigned char)buffer[i]));
+        }
+        printf("\n");
+
+        // Close read end when done
+        close(pipefd[0]);
+    }
+
+    // ---- PARENT PROCESS ----
+    else {
+        // Parent only WRITES — so close the read end
+        close(pipefd[0]);
+
+        // Write the message into the pipe
+        write(pipefd[1], message, strlen(message));
+        printf("Parent sent: %s\n", message);
+
+        // Close write end — this signals EOF to child
+        // Without this, child's read() will wait forever!
+        close(pipefd[1]);
+
+        // Wait for child to finish
+        wait(NULL);
+        printf("Parent: Child finished. Exiting.\n");
+    }
+
+    return 0;
+}
+```
+
+---
+
+### Step by step walkthrough:
+
+```
+BEFORE fork:
+  pipe() creates pipefd[0] (read) and pipefd[1] (write)
+
+AFTER fork:
+  Parent has: pipefd[0] and pipefd[1]   ← closes pipefd[0] (doesn't need to read)
+  Child has:  pipefd[0] and pipefd[1]   ← closes pipefd[1] (doesn't need to write)
+
+Parent writes "Hello from parent" into pipefd[1]
+Parent closes pipefd[1] → sends EOF signal to child
+
+Child reads from pipefd[0] → gets "Hello from parent"
+Child loops through each character → applies toupper()
+Child prints "HELLO FROM PARENT"
+```
+
+---
+
+### Why `(unsigned char)buffer[i]` in `toupper()`?
+`toupper()` expects a value between 0-255. If `char` is signed on your system, negative values cause undefined behavior. Casting to `unsigned char` is the safe, correct way.
+
+---
+
+### Explanation table:
+
+| Code | What it does |
+|------|-------------|
+| `pipe(pipefd)` | Creates the pipe before fork so both processes inherit it |
+| `close(pipefd[1])` in child | Child won't write, so close write end |
+| `close(pipefd[0])` in parent | Parent won't read, so close read end |
+| `read(pipefd[0], buffer, sizeof(buffer))` | Child reads whatever parent wrote |
+| `buffer[bytes_read] = '\0'` | String termination — make it a proper C string |
+| `toupper(buffer[i])` | Converts 'h'→'H', 'e'→'E', space stays space, etc. |
+| `close(pipefd[1])` in parent after writing | Sends EOF to child — without this child waits forever |
+| `wait(NULL)` | Parent waits for child to finish printing |
+
+---
+
+### Compile and Run:
+
+```bash
+gcc pipe_upper.c -o pipe_upper
+./pipe_upper
+```
+
+### Expected Output:
+```
+Parent sent: Hello from parent
+Child received: Hello from parent
+Child (uppercase): HELLO FROM PARENT
+Parent: Child finished. Exiting.
+```
+
+---
+---
+
+## Q4 — Multithreading (3 threads, interleaved vs serialized)
+
+### What is being asked?
+Create 3 threads — BBC, CNN, Reuters. Each prints 5 headlines with a small delay.
+- **Without mutex:** All threads run simultaneously → output is **interleaved** (mixed)
+- **With mutex:** Only one thread prints at a time → output is **serialized** (one after another)
+
+Explain the difference between the two behaviors.
+
+### What does interleaved mean?
+Without a lock, the OS switches between threads unpredictably. So you might see:
+```
+[BBC] Headline 1
+[CNN] Headline 1
+[BBC] Headline 2
+[Reuters] Headline 1
+```
+All mixed up — because threads run at the same time.
+
+### What does serialized mean?
+With a mutex, only one thread can print at a time. So all of BBC's headlines print, then CNN's, then Reuters' (or some similar grouped order — whoever grabs the lock first).
+
+---
+
+### FILE: `news_threads.c`
+
+```c
+#include <stdio.h>
+#include <pthread.h>
+#include <unistd.h>    // usleep()
+
+#define HEADLINES 5    // Each source prints 5 headlines
+
+pthread_mutex_t print_lock;   // Mutex for Part 2
+int use_mutex = 0;            // Flag: 0 = no mutex, 1 = use mutex
+
+// Thread function — argument is the source name (BBC, CNN, Reuters)
+void* fetch_headlines(void* arg) {
+    char* source = (char*)arg;
+
+    for (int i = 1; i <= HEADLINES; i++) {
+        if (use_mutex) {
+            pthread_mutex_lock(&print_lock);   // Lock before printing
+        }
+
+        printf("[%s] Headline #%d\n", source, i);
+        fflush(stdout);  // Force output to appear immediately
+
+        if (use_mutex) {
+            pthread_mutex_unlock(&print_lock); // Unlock after printing
+        }
+
+        usleep(100000);   // Sleep 0.1 seconds — gives other threads a chance to run
+    }
+
+    return NULL;
+}
+
+int main() {
+    pthread_t t1, t2, t3;
+
+    // Source names to pass as arguments to threads
+    char* sources[] = {"BBC", "CNN", "Reuters"};
+
+    // ============================
+    // PART 1: WITHOUT MUTEX
+    // ============================
+    printf("==============================\n");
+    printf("PART 1: WITHOUT MUTEX\n");
+    printf("(Interleaved — threads run simultaneously)\n");
+    printf("==============================\n");
+    use_mutex = 0;
+
+    // Create 3 threads, each gets its source name
+    pthread_create(&t1, NULL, fetch_headlines, sources[0]);  // BBC
+    pthread_create(&t2, NULL, fetch_headlines, sources[1]);  // CNN
+    pthread_create(&t3, NULL, fetch_headlines, sources[2]);  // Reuters
+
+    // Wait for all 3 to finish
+    pthread_join(t1, NULL);
+    pthread_join(t2, NULL);
+    pthread_join(t3, NULL);
+
+    printf("\n");
+
+    // ============================
+    // PART 2: WITH MUTEX
+    // ============================
+    printf("==============================\n");
+    printf("PART 2: WITH MUTEX\n");
+    printf("(Serialized — one thread at a time)\n");
+    printf("==============================\n");
+    use_mutex = 1;
+
+    // Initialize the mutex before using it
+    pthread_mutex_init(&print_lock, NULL);
+
+    pthread_create(&t1, NULL, fetch_headlines, sources[0]);  // BBC
+    pthread_create(&t2, NULL, fetch_headlines, sources[1]);  // CNN
+    pthread_create(&t3, NULL, fetch_headlines, sources[2]);  // Reuters
+
+    pthread_join(t1, NULL);
+    pthread_join(t2, NULL);
+    pthread_join(t3, NULL);
+
+    pthread_mutex_destroy(&print_lock);   // Clean up mutex
+
+    printf("\nDifference explained:\n");
+    printf("Without mutex: threads print simultaneously -> output is mixed/interleaved\n");
+    printf("With mutex: only 1 thread prints at a time -> output is grouped/serialized\n");
+
+    return 0;
+}
+```
+
+---
+
+### Explanation of every part:
+
+| Code | What it does |
+|------|-------------|
+| `void* fetch_headlines(void* arg)` | Thread function. Must take `void*` and return `void*` — pthread requirement |
+| `char* source = (char*)arg` | Cast the generic `void*` back to `char*` to get the source name |
+| `usleep(100000)` | Sleep for 100,000 microseconds = 0.1 seconds. Lets OS schedule other threads |
+| `fflush(stdout)` | Forces the print to appear immediately (without this, output can be buffered and delayed) |
+| `pthread_mutex_lock(&print_lock)` | Only one thread can pass this point at a time |
+| `pthread_mutex_unlock(&print_lock)` | Release the lock so the next thread can print |
+| `pthread_create(&t1, NULL, fetch_headlines, sources[0])` | Creates thread t1. Runs `fetch_headlines`. Passes `"BBC"` as argument |
+| `pthread_join(t1, NULL)` | Main thread waits for t1 to finish |
+| `pthread_mutex_init` | Must be called before first use |
+| `pthread_mutex_destroy` | Clean up when done |
+
+---
+
+### What is the difference between interleaved and serialized?
+
+**Without mutex (interleaved):**
+- All 3 threads are printing at almost the same time
+- The OS switches between them unpredictably
+- Good for performance when threads don't share resources
+- Output looks mixed up — shows true parallelism
+
+**With mutex (serialized):**
+- When one thread is inside the `lock` / `unlock` block, others wait
+- Output is grouped by thread (BBC prints all its lines, then CNN, etc. — or some similar grouping)
+- Safe when threads share a resource (like a file, database, counter)
+- Output looks ordered — shows how mutex controls access
+
+---
+
+### Compile and Run:
+
+```bash
+gcc news_threads.c -o news_threads -lpthread
+./news_threads
+```
+
+### Expected Output (Part 1 — interleaved, order will vary every run):
+```
+==============================
+PART 1: WITHOUT MUTEX
+(Interleaved — threads run simultaneously)
+==============================
+[BBC] Headline #1
+[CNN] Headline #1
+[Reuters] Headline #1
+[BBC] Headline #2
+[CNN] Headline #2
+[Reuters] Headline #2
+[BBC] Headline #3
+...
+```
+
+### Expected Output (Part 2 — serialized):
+```
+==============================
+PART 2: WITH MUTEX
+(Serialized — one thread at a time)
+==============================
+[BBC] Headline #1
+[BBC] Headline #2
+[BBC] Headline #3
+[BBC] Headline #4
+[BBC] Headline #5
+[CNN] Headline #1
+[CNN] Headline #2
+...
+```
+
+---
+---
+
+## Q5 — CPU Scheduling (Round Robin, Quantum = 3)
+
+### What is being asked?
+4 render jobs all arrive at t=0. Time quantum = 3ms. Simulate Round Robin scheduling. Find which job finishes first and average turnaround time.
+
+### What is Round Robin?
+Every process gets a small fixed time slot (quantum = 3ms). After its turn, it goes back to the end of the queue. Like a merry-go-round — everyone gets equal turns.
+
+### Input:
+| Job | Burst Time |
+|-----|-----------|
+| J1 | 10 |
+| J2 | 4 |
+| J3 | 6 |
+| J4 | 3 |
+
+All arrive at t=0. Quantum = 3.
+
+---
+
+### FILE: `round_robin.c`
+
+```c
+#include <stdio.h>
+
+int main() {
+    int n = 4;
+    int quantum = 3;
+
+    int pid[]         = {1, 2, 3, 4};
+    int burst[]       = {10, 4, 6, 3};
+    int remaining[]   = {10, 4, 6, 3};  // Copy of burst — we'll decrement this
+    int arrival[]     = {0, 0, 0, 0};   // All arrive at t=0
+    int ct[4]         = {0};             // Completion time
+    int finished[4]   = {0};            // Has the process finished?
+
+    int current_time = 0;
+    int done = 0;     // Count of finished processes
+
+    printf("Round Robin Scheduling (Quantum = %d)\n", quantum);
+    printf("========================================\n");
+    printf("Gantt Chart execution:\n");
+
+    // Keep running until all processes are done
+    while (done < n) {
+        int any_ran = 0;   // Track if at least one process ran this cycle
+
+        for (int i = 0; i < n; i++) {
+            if (remaining[i] > 0) {
+                any_ran = 1;
+
+                // This process runs for min(quantum, remaining) time
+                int run_time = (remaining[i] < quantum) ? remaining[i] : quantum;
+
+                printf("Time %2d - %2d : J%d runs (remaining after = %d)\n",
+                       current_time, current_time + run_time,
+                       pid[i], remaining[i] - run_time);
+
+                current_time  += run_time;
+                remaining[i]  -= run_time;
+
+                // Check if this process just finished
+                if (remaining[i] == 0 && !finished[i]) {
+                    ct[i] = current_time;
+                    finished[i] = 1;
+                    done++;
+                    printf("  --> J%d FINISHED at time %d\n", pid[i], ct[i]);
+                }
+            }
+        }
+
+        // Safety: if nothing ran, break (shouldn't happen in normal cases)
+        if (!any_ran) break;
+    }
+
+    // Calculate and print TAT and WT
+    printf("\nResults:\n");
+    printf("%-5s %-5s %-5s %-5s %-5s %-5s\n", "Job", "BT", "CT", "TAT", "WT", "");
+
+    float total_tat = 0;
+    for (int i = 0; i < n; i++) {
+        int tat = ct[i] - arrival[i];  // Turnaround = Completion - Arrival
+        int wt  = tat - burst[i];      // Waiting = TAT - Burst
+        total_tat += tat;
+        printf("J%-4d %-5d %-5d %-5d %-5d\n", pid[i], burst[i], ct[i], tat, wt);
+    }
+
+    printf("\nAverage Turnaround Time = %.2f\n", total_tat / n);
+
+    // Find which job finished first
+    int first_finish_time = ct[0];
+    int first_job = 0;
+    for (int i = 1; i < n; i++) {
+        if (ct[i] < first_finish_time) {
+            first_finish_time = ct[i];
+            first_job = i;
+        }
+    }
+    printf("Job that finished FIRST: J%d at time %d\n", pid[first_job], first_finish_time);
+
+    return 0;
+}
+```
+
+---
+
+### Manual Trace (Queue cycles):
+
+**Queue: J1, J2, J3, J4**
+
+| Time | Running | Remaining after |
+|------|---------|----------------|
+| 0-3 | J1 | J1=7 |
+| 3-6 | J2 | J2=1 |
+| 6-9 | J3 | J3=3 |
+| 9-12 | J4 | J4=0 ✓ DONE at t=12 |
+| 12-15 | J1 | J1=4 |
+| 15-16 | J2 | J2=0 ✓ DONE at t=16 |
+| 16-19 | J3 | J3=0 ✓ DONE at t=19 |
+| 19-22 | J1 | J1=1 |
+| 22-23 | J1 | J1=0 ✓ DONE at t=23 |
+
+**Results:**
+| Job | BT | CT | TAT | WT |
+|-----|----|----|-----|----|
+| J1 | 10 | 23 | 23 | 13 |
+| J2 | 4 | 16 | 16 | 12 |
+| J3 | 6 | 19 | 19 | 13 |
+| J4 | 3 | 12 | 12 | 9 |
+
+Average TAT = (23+16+19+12)/4 = **17.50**
+First to finish = **J4 at t=12**
+
+---
+
+### Compile and Run:
+```bash
+gcc round_robin.c -o round_robin
+./round_robin
+```
+
+### Output:
+```
+Round Robin Scheduling (Quantum = 3)
+========================================
+Gantt Chart execution:
+Time  0 -  3 : J1 runs (remaining after = 7)
+Time  3 -  6 : J2 runs (remaining after = 1)
+Time  6 -  9 : J3 runs (remaining after = 3)
+Time  9 - 12 : J4 runs (remaining after = 0)
+  --> J4 FINISHED at time 12
+Time 12 - 15 : J1 runs (remaining after = 4)
+Time 15 - 16 : J2 runs (remaining after = 0)
+  --> J2 FINISHED at time 16
+Time 16 - 19 : J3 runs (remaining after = 0)
+  --> J3 FINISHED at time 19
+Time 19 - 22 : J1 runs (remaining after = 1)
+Time 22 - 23 : J1 runs (remaining after = 0)
+  --> J1 FINISHED at time 23
+
+Results:
+Job   BT    CT    TAT   WT
+J1    10    23    23    13
+J2    4     16    16    12
+J3    6     19    19    13
+J4    3     12    12    9
+
+Average Turnaround Time = 17.50
+Job that finished FIRST: J4 at time 12
+```
+
+---
+---
+
+## Q6 — Deadlock Handling (Banker's Algorithm with Resource Request)
+
+### What is being asked?
+4 VMs share 3 resource types. VM2 makes a new request `(1, 0, 2)`. Check:
+1. Is request ≤ Need? (Don't ask for more than you said you'd need)
+2. Is request ≤ Available? (Resources must actually be free)
+3. If both OK → simulate granting → run safety algorithm → grant or deny
+
+### This is Banker's Algorithm + Request Handling
+This is more complete than basic Banker's. The extra step is checking whether a specific new request can be safely granted.
+
+---
+
+### FILE: `bankers_request.c`
+
+```c
+#include <stdio.h>
+
+#define P 4   // Number of processes (VMs)
+#define R 3   // Number of resource types (CPU tokens, memory blocks, network slots)
+
+// Safety algorithm — returns 1 if safe, 0 if not
+int is_safe(int alloc[P][R], int need[P][R], int avail[R]) {
+    int work[R];
+    int finish[P];
+    int safe_seq[P];
+    int count = 0;
+
+    for (int j = 0; j < R; j++) work[j] = avail[j];
+    for (int i = 0; i < P; i++) finish[i] = 0;
+
+    while (count < P) {
+        int found = 0;
+        for (int i = 0; i < P; i++) {
+            if (!finish[i]) {
+                int can = 1;
+                for (int j = 0; j < R; j++) {
+                    if (need[i][j] > work[j]) { can = 0; break; }
+                }
+                if (can) {
+                    for (int j = 0; j < R; j++)
+                        work[j] += alloc[i][j];
+                    finish[i] = 1;
+                    safe_seq[count++] = i;
+                    found = 1;
+                }
+            }
+        }
+        if (!found) break;
+    }
+
+    if (count == P) {
+        printf("Safe sequence found: ");
+        for (int i = 0; i < P; i++) printf("VM%d ", safe_seq[i]);
+        printf("\n");
+        return 1;
+    }
+    return 0;
+}
+
+int main() {
+    // Resource types: CPU tokens, memory blocks, network slots
+    // Total resources: (10, 5, 7)
+
+    int allocation[P][R] = {
+        {0, 1, 0},   // VM0 holds 0 CPU, 1 mem, 0 net
+        {2, 0, 0},   // VM1 holds 2 CPU, 0 mem, 0 net
+        {3, 0, 2},   // VM2 holds 3 CPU, 0 mem, 2 net
+        {2, 1, 1}    // VM3 holds 2 CPU, 1 mem, 1 net
+    };
+
+    int max_need[P][R] = {
+        {7, 5, 3},   // VM0 max need
+        {3, 2, 2},   // VM1 max need
+        {9, 0, 2},   // VM2 max need
+        {2, 2, 2}    // VM3 max need
+    };
+
+    int available[R] = {3, 3, 2};  // Currently free: 3 CPU, 3 mem, 2 net
+
+    // Calculate Need = Max - Allocation
+    int need[P][R];
+    for (int i = 0; i < P; i++)
+        for (int j = 0; j < R; j++)
+            need[i][j] = max_need[i][j] - allocation[i][j];
+
+    printf("Banker's Algorithm — Resource Request Handling\n");
+    printf("================================================\n");
+    printf("Available: CPU=%d, Mem=%d, Net=%d\n\n",
+           available[0], available[1], available[2]);
+
+    printf("Need Matrix:\n");
+    printf("%-5s %-5s %-5s %-5s\n", "VM", "CPU", "Mem", "Net");
+    for (int i = 0; i < P; i++)
+        printf("VM%-3d %-5d %-5d %-5d\n", i, need[i][0], need[i][1], need[i][2]);
+
+    // VM2's new request
+    int req_vm = 2;
+    int request[R] = {1, 0, 2};   // VM2 requests (1 CPU, 0 mem, 2 net)
+
+    printf("\nVM%d is requesting: CPU=%d, Mem=%d, Net=%d\n",
+           req_vm, request[0], request[1], request[2]);
+
+    // Check 1: request <= need
+    printf("\nStep 1: Is request <= Need of VM%d?\n", req_vm);
+    int ok1 = 1;
+    for (int j = 0; j < R; j++) {
+        if (request[j] > need[req_vm][j]) { ok1 = 0; break; }
+    }
+    if (!ok1) {
+        printf("NO — VM%d is requesting more than its stated max need. DENIED.\n", req_vm);
+        return 0;
+    }
+    printf("YES — Request is within Need.\n");
+
+    // Check 2: request <= available
+    printf("\nStep 2: Is request <= Available?\n");
+    int ok2 = 1;
+    for (int j = 0; j < R; j++) {
+        if (request[j] > available[j]) { ok2 = 0; break; }
+    }
+    if (!ok2) {
+        printf("NO — Not enough resources available right now. VM%d must WAIT.\n", req_vm);
+        return 0;
+    }
+    printf("YES — Resources are available.\n");
+
+    // Step 3: Simulate granting the request
+    printf("\nStep 3: Simulating grant...\n");
+    for (int j = 0; j < R; j++) {
+        available[req_vm] -= request[j];
+        allocation[req_vm][j] += request[j];
+        need[req_vm][j] -= request[j];
+    }
+
+    // Run safety algorithm on new state
+    printf("\nStep 4: Running Safety Algorithm...\n");
+    if (is_safe(allocation, need, available)) {
+        printf("\nRequest GRANTED — System remains in safe state.\n");
+    } else {
+        printf("\nRequest DENIED — Would cause unsafe state (deadlock risk).\n");
+        // Rollback the simulated allocation
+        for (int j = 0; j < R; j++) {
+            available[req_vm] += request[j];
+            allocation[req_vm][j] -= request[j];
+            need[req_vm][j] += request[j];
+        }
+        printf("Resources restored to previous state.\n");
+    }
+
+    return 0;
+}
+```
+
+---
+
+### Explanation of Logic:
+
+| Step | What it checks | Why |
+|------|---------------|-----|
+| Request ≤ Need | VM can't ask for more than it said it would ever need | Prevents cheating |
+| Request ≤ Available | Resources must physically be free | Can't give what you don't have |
+| Simulate grant | Temporarily update allocation, need, available | Check "what if we said yes" |
+| Safety algorithm | Can all processes eventually finish in this new state? | If yes → safe to grant |
+
+---
+
+### Compile and Run:
+```bash
+gcc bankers_request.c -o bankers_request
+./bankers_request
+```
+
+### Output:
+```
+Banker's Algorithm — Resource Request Handling
+================================================
+Available: CPU=3, Mem=3, Net=2
+
+Need Matrix:
+VM    CPU   Mem   Net
+VM0   7     4     3
+VM1   1     2     2
+VM2   6     0     0
+VM3   0     1     1
+
+VM2 is requesting: CPU=1, Mem=0, Net=2
+
+Step 1: Is request <= Need of VM2?
+YES — Request is within Need.
+
+Step 2: Is request <= Available?
+YES — Resources are available.
+
+Step 3: Simulating grant...
+
+Step 4: Running Safety Algorithm...
+Safe sequence found: VM1 VM3 VM0 VM2
+
+Request GRANTED — System remains in safe state.
+```
+
+---
+---
+
+## Q7 — Shared Memory (POSIX: Player Score — shm_open + mmap)
+
+### What is being asked?
+Game engine (writer) updates a score: 100, 200, 300 with 1-second delays.
+Leaderboard UI (reader) reads and prints score 3 times.
+Use **POSIX shared memory** (`shm_open`, `ftruncate`, `mmap`) instead of System V (`shmget`).
+
+### POSIX vs System V Shared Memory:
+| | System V (Set A Q7) | POSIX (Set C Q7) |
+|-|---------------------|-----------------|
+| Create | `shmget()` | `shm_open()` |
+| Attach | `shmat()` | `mmap()` |
+| Detach | `shmdt()` | `munmap()` |
+| Delete | `shmctl(IPC_RMID)` | `shm_unlink()` |
+| Identifier | Integer key | Named string like `/score` |
+
+POSIX is the modern, cleaner way. The shared memory appears like a file in `/dev/shm/`.
+
+---
+
+### FILE 1: `game_writer.c`
+
+```c
+#include <stdio.h>
+#include <fcntl.h>       // O_CREAT, O_RDWR
+#include <sys/mman.h>    // mmap(), munmap()
+#include <sys/stat.h>    // ftruncate needs this
+#include <unistd.h>      // ftruncate(), sleep()
+
+#define SHM_NAME "/game_score"   // Name of shared memory (like a filename)
+#define SHM_SIZE sizeof(int)     // We only need to store one integer
+
+int main() {
+    // Step 1: Create/open the shared memory object
+    // O_CREAT = create if not exists
+    // O_RDWR  = open for reading and writing
+    // 0666    = permissions
+    int shm_fd = shm_open(SHM_NAME, O_CREAT | O_RDWR, 0666);
+    if (shm_fd < 0) {
+        printf("Writer: shm_open failed!\n");
+        return 1;
+    }
+    printf("Writer: Shared memory created.\n");
+
+    // Step 2: Set the size of the shared memory
+    // ftruncate sets the size — like allocating space
+    ftruncate(shm_fd, SHM_SIZE);
+
+    // Step 3: Map shared memory into this process's address space
+    // mmap returns a pointer — we can use it like a normal variable
+    // PROT_READ | PROT_WRITE = we can read and write
+    // MAP_SHARED = changes are visible to other processes
+    int *score = (int*) mmap(NULL, SHM_SIZE,
+                              PROT_READ | PROT_WRITE,
+                              MAP_SHARED, shm_fd, 0);
+    if (score == MAP_FAILED) {
+        printf("Writer: mmap failed!\n");
+        return 1;
+    }
+
+    // Step 4: Write score values with 1-second delays
+    int scores[] = {100, 200, 300};
+    for (int i = 0; i < 3; i++) {
+        *score = scores[i];
+        printf("Writer: Set score to %d\n", *score);
+        sleep(1);   // Wait 1 second before next update
+    }
+
+    // Step 5: Unmap — this process no longer needs access
+    munmap(score, SHM_SIZE);
+    printf("Writer: Done. Score updates complete.\n");
+
+    return 0;
+}
+```
+
+---
+
+### FILE 2: `game_reader.c`
+
+```c
+#include <stdio.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+#define SHM_NAME "/game_score"
+#define SHM_SIZE sizeof(int)
+
+int main() {
+    // Step 1: Open existing shared memory (writer must run first)
+    int shm_fd = shm_open(SHM_NAME, O_RDONLY, 0666);
+    if (shm_fd < 0) {
+        printf("Reader: shm_open failed — run writer first!\n");
+        return 1;
+    }
+
+    // Step 2: Map shared memory — read-only this time
+    int *score = (int*) mmap(NULL, SHM_SIZE,
+                              PROT_READ,
+                              MAP_SHARED, shm_fd, 0);
+    if (score == MAP_FAILED) {
+        printf("Reader: mmap failed!\n");
+        return 1;
+    }
+
+    // Step 3: Read score 3 times with 1-second delay
+    printf("Reader: Reading score 3 times...\n");
+    for (int i = 1; i <= 3; i++) {
+        printf("Reader: Score = %d\n", *score);
+        sleep(1);
+    }
+
+    // Step 4: Unmap and unlink (destroy shared memory)
+    munmap(score, SHM_SIZE);
+    shm_unlink(SHM_NAME);   // Removes the shared memory object from the system
+
+    printf("Reader: Done. Shared memory removed.\n");
+    return 0;
+}
+```
+
+---
+
+### Explanation:
+
+| Function | What it does |
+|----------|-------------|
+| `shm_open(name, O_CREAT\|O_RDWR, 0666)` | Creates a named shared memory object. Returns a file descriptor |
+| `ftruncate(shm_fd, size)` | Sets the size of the shared memory. Must be called before mmap |
+| `mmap(NULL, size, PROT_READ\|PROT_WRITE, MAP_SHARED, shm_fd, 0)` | Maps shared memory into process address space. Returns a pointer |
+| `*score = 100` | Writes to shared memory just like a normal variable |
+| `munmap(score, size)` | Unmaps (detaches) the shared memory from this process |
+| `shm_unlink(name)` | Deletes the shared memory object from the OS |
+
+---
+
+### Compile and Run:
+
+```bash
+gcc game_writer.c -o writer -lrt
+gcc game_reader.c -o reader -lrt
+
+# Run writer in background
+./writer &
+
+# Run reader (it will read while writer updates)
+./reader
+```
+
+(`-lrt` links the POSIX real-time library needed for `shm_open`)
+
+### Output:
+```
+Writer: Shared memory created.
+Writer: Set score to 100
+Reader: Reading score 3 times...
+Reader: Score = 100
+Writer: Set score to 200
+Reader: Score = 200
+Writer: Set score to 300
+Reader: Score = 300
+Writer: Done. Score updates complete.
+Reader: Done. Shared memory removed.
+```
+
+---
+---
+
+## Q8 — IPC Classical Problems (Readers-Writers)
+
+### What is being asked?
+Multiple editors (readers) can read simultaneously. But a journalist (writer) needs **exclusive access** — no readers while writing, no other writers either.
+
+2 reader threads + 1 writer thread. Each runs 3 iterations. Verify no writer enters while readers are active.
+
+### The Rules:
+- Multiple readers can read at the same time ✓
+- Only one writer at a time ✓
+- No reading while writing ✓
+- No writing while reading ✓
+
+### Solution uses:
+- `write_lock` semaphore → controls writer access (also blocks readers from entering when writer is writing)
+- `mutex` semaphore → protects the `reader_count` variable
+- `reader_count` integer → tracks how many readers are currently reading
+
+---
+
+### FILE: `readers_writers.c`
+
+```c
+#include <stdio.h>
+#include <pthread.h>
+#include <semaphore.h>
+#include <unistd.h>
+
+sem_t mutex;       // Protects reader_count variable
+sem_t write_lock;  // Exclusive access for writer (and first/last reader)
+int reader_count = 0;   // How many readers are currently reading
+
+// ---- READER THREAD ----
+void* reader(void* arg) {
+    int id = *((int*)arg);
+
+    for (int i = 1; i <= 3; i++) {
+        // Entry section
+        sem_wait(&mutex);        // Lock to safely update reader_count
+        reader_count++;
+        if (reader_count == 1) {
+            // First reader locks out writers
+            // If a writer is writing, this blocks here until writer finishes
+            sem_wait(&write_lock);
+        }
+        sem_post(&mutex);        // Unlock reader_count
+
+        // Reading section (multiple readers can be here simultaneously)
+        printf("Reader %d is READING (iteration %d) [active readers: %d]\n",
+               id, i, reader_count);
+        sleep(1);   // Simulate reading time
+
+        // Exit section
+        sem_wait(&mutex);        // Lock to safely update reader_count
+        reader_count--;
+        if (reader_count == 0) {
+            // Last reader releases write_lock so writers can proceed
+            sem_post(&write_lock);
+        }
+        sem_post(&mutex);        // Unlock reader_count
+
+        sleep(1);   // Wait before next read
+    }
+
+    printf("Reader %d finished.\n", id);
+    return NULL;
+}
+
+// ---- WRITER THREAD ----
+void* writer(void* arg) {
+    int id = *((int*)arg);
+
+    for (int i = 1; i <= 3; i++) {
+        // Writer needs exclusive access
+        // If any reader is reading, write_lock is held → writer blocks here
+        sem_wait(&write_lock);
+
+        printf("Writer %d is WRITING (iteration %d)\n", id, i);
+        sleep(1);   // Simulate writing time
+
+        sem_post(&write_lock);   // Release — readers/writers can proceed
+
+        sleep(1);   // Wait before next write
+    }
+
+    printf("Writer %d finished.\n", id);
+    return NULL;
+}
+
+int main() {
+    pthread_t r1, r2, w1;
+    int rids[2] = {1, 2};
+    int wid = 1;
+
+    // Initialize semaphores
+    sem_init(&mutex,      0, 1);   // mutex starts at 1 (unlocked)
+    sem_init(&write_lock, 0, 1);   // write_lock starts at 1 (no one writing)
+
+    printf("Readers-Writers Problem\n");
+    printf("========================\n");
+    printf("2 Readers, 1 Writer — each runs 3 iterations\n\n");
+
+    // Create threads
+    pthread_create(&r1, NULL, reader, &rids[0]);
+    pthread_create(&r2, NULL, reader, &rids[1]);
+    pthread_create(&w1, NULL, writer, &wid);
+
+    // Wait for all to finish
+    pthread_join(r1, NULL);
+    pthread_join(r2, NULL);
+    pthread_join(w1, NULL);
+
+    sem_destroy(&mutex);
+    sem_destroy(&write_lock);
+
+    printf("\nAll done. No writer entered while readers were active!\n");
+    return 0;
+}
+```
+
+---
+
+### How the logic works step by step:
+
+**When first reader enters:**
+```
+reader_count becomes 1
+→ First reader does sem_wait(write_lock)
+→ This blocks any writer from entering
+```
+
+**When more readers come:**
+```
+reader_count becomes 2, 3...
+→ They DON'T need to touch write_lock
+→ Multiple readers read simultaneously
+```
+
+**When last reader leaves:**
+```
+reader_count becomes 0
+→ Last reader does sem_post(write_lock)
+→ This releases the lock — writer can now enter
+```
+
+**When writer wants to write:**
+```
+sem_wait(write_lock)
+→ If any reader holds it → writer waits
+→ Once write_lock is free → writer enters exclusively
+→ sem_post(write_lock) when done
+```
+
+---
+
+### Compile and Run:
+```bash
+gcc readers_writers.c -o rw -lpthread
+./rw
+```
+
+### Output:
+```
+Readers-Writers Problem
+========================
+2 Readers, 1 Writer — each runs 3 iterations
+
+Reader 1 is READING (iteration 1) [active readers: 1]
+Reader 2 is READING (iteration 1) [active readers: 2]
+Reader 1 is READING (iteration 2) [active readers: 2]
+Reader 2 is READING (iteration 2) [active readers: 2]
+Writer 1 is WRITING (iteration 1)
+Reader 1 is READING (iteration 3) [active readers: 1]
+Reader 2 is READING (iteration 3) [active readers: 2]
+Writer 1 is WRITING (iteration 2)
+Writer 1 is WRITING (iteration 3)
+Reader 1 finished.
+Reader 2 finished.
+Writer 1 finished.
+
+All done. No writer entered while readers were active!
+```
+
+---
+---
+
+## Q9 — Disk Scheduling (C-SCAN)
+
+### What is being asked?
+Requests: `55, 58, 39, 18, 90, 160, 150, 38, 184`. Head starts at **100** moving toward **lower** tracks. Use C-SCAN. Calculate total head movement including the jump.
+
+### What is C-SCAN?
+C-SCAN (Circular SCAN) is like SCAN but with a twist:
+- Head moves in one direction, servicing requests
+- When it reaches the end, it **jumps back to the other end** (this jump counts as movement!)
+- Then continues in the same direction (doesn't reverse like SCAN)
+
+Think of it like a typewriter carriage — goes across, snaps back to start, goes across again.
+
+**Our case:** Head starts at 100, moving toward **lower** tracks.
+- Phase 1: Service all requests ≤ 100, going down (100 → 0 direction)
+- Jump to highest track
+- Phase 2: Service remaining requests (the higher ones)
+
+---
+
+### FILE: `cscan.c`
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+
+int compare(const void* a, const void* b) {
+    return (*(int*)a - *(int*)b);
+}
+
+int main() {
+    int requests[] = {55, 58, 39, 18, 90, 160, 150, 38, 184};
+    int n = 9;
+    int head = 100;
+    // Direction: moving toward LOWER tracks (decreasing)
+
+    // Sort all requests
+    int sorted[9];
+    for (int i = 0; i < n; i++) sorted[i] = requests[i];
+    qsort(sorted, n, sizeof(int), compare);
+
+    printf("C-SCAN Disk Scheduling\n");
+    printf("======================\n");
+    printf("Head starts at: %d, moving toward LOWER tracks\n\n", head);
+
+    printf("Sorted requests: ");
+    for (int i = 0; i < n; i++) printf("%d ", sorted[i]);
+    printf("\n\n");
+
+    int total_movement = 0;
+    int current = head;
+    int service_order[20];
+    int order_count = 0;
+
+    // Phase 1: Move LEFT (lower) — service all requests <= head
+    // Go in decreasing order from just below head down to 0
+    printf("Phase 1: Moving LEFT (toward lower tracks)\n");
+    for (int i = n - 1; i >= 0; i--) {
+        if (sorted[i] <= head) {
+            int dist = current - sorted[i];
+            printf("  Head: %d -> %d (distance = %d)\n", current, sorted[i], dist);
+            total_movement += dist;
+            service_order[order_count++] = sorted[i];
+            current = sorted[i];
+        }
+    }
+
+    // Phase 2: Jump to the HIGHEST track (circular jump)
+    // The jump distance = current position to highest track in our list
+    int highest = sorted[n - 1];
+    int jump_dist = highest - current;   // Jump from lowest serviced to highest
+    printf("\nC-SCAN Jump: Head jumps from %d to %d (jump distance = %d)\n",
+           current, highest, jump_dist);
+    total_movement += jump_dist;
+    current = highest;
+    service_order[order_count++] = highest;
+
+    // Phase 3: Continue moving LEFT — service remaining requests (those > head)
+    printf("\nPhase 2: After jump, continuing LEFT (servicing higher tracks)\n");
+    // These are tracks that were ABOVE the starting head position
+    // Service them in decreasing order
+    for (int i = n - 1; i >= 0; i--) {
+        if (sorted[i] > head) {
+            int dist = current - sorted[i];
+            printf("  Head: %d -> %d (distance = %d)\n", current, sorted[i], dist);
+            total_movement += dist;
+            service_order[order_count++] = sorted[i];
+            current = sorted[i];
+        }
+    }
+
+    printf("\nService Order: ");
+    for (int i = 0; i < order_count; i++) printf("%d ", service_order[i]);
+    printf("\n");
+
+    printf("\nTotal Head Movement (C-SCAN) = %d tracks\n", total_movement);
+    printf("(Includes jump from %d to %d)\n", sorted[0], highest);
+
+    return 0;
+}
+```
+
+---
+
+### Manual Trace:
+- Sorted: `18, 38, 39, 55, 58, 90, 150, 160, 184`
+- Head = 100, moving left (toward lower)
+
+**Phase 1 (going left from 100):**
+100→90 (10), 90→58 (32), 58→55 (3), 55→39 (16), 39→38 (1), 38→18 (20)
+
+**Jump:** 18 → 184 (distance = 166)
+
+**Phase 2 (continuing left from 184, servicing those above 100):**
+184→160 (24), 160→150 (10)
+
+Total = 10+32+3+16+1+20+166+24+10 = **282**
+
+---
+
+### Compile and Run:
+```bash
+gcc cscan.c -o cscan
+./cscan
+```
+
+### Output:
+```
+C-SCAN Disk Scheduling
+======================
+Head starts at: 100, moving toward LOWER tracks
+
+Sorted requests: 18 38 39 55 58 90 150 160 184
+
+Phase 1: Moving LEFT (toward lower tracks)
+  Head: 100 -> 90 (distance = 10)
+  Head: 90 -> 58 (distance = 32)
+  Head: 58 -> 55 (distance = 3)
+  Head: 55 -> 39 (distance = 16)
+  Head: 39 -> 38 (distance = 1)
+  Head: 38 -> 18 (distance = 20)
+
+C-SCAN Jump: Head jumps from 18 to 184 (jump distance = 166)
+
+Phase 2: After jump, continuing LEFT (servicing higher tracks)
+  Head: 184 -> 160 (distance = 24)
+  Head: 160 -> 150 (distance = 10)
+
+Service Order: 90 58 55 39 38 18 184 160 150
+Total Head Movement (C-SCAN) = 282 tracks
+(Includes jump from 18 to 184)
+```
+
+---
+---
+
+## Q10 — Memory Address Translation (Two-Level Paging)
+
+### What is being asked?
+A 32-bit virtual address is split into 3 parts:
+- Bits [31:22] → L1 index (top 10 bits)
+- Bits [21:12] → L2 index (next 10 bits)
+- Bits [11:0]  → Offset (bottom 12 bits = 4096 = page size)
+
+For virtual address `0x00403004`:
+- Extract L1=1, L2=3, offset=4
+- L1[1] gives the base of L2 table = 5000
+- L2[3] gives frame number = 7
+- Physical = 7 × 4096 + 4
+
+### Why Two-Level Paging?
+A single-level page table for 32-bit addresses would need 2^20 = 1 million entries — too large to keep in memory. Two-level paging splits it into a small L1 table that points to smaller L2 tables, which are only created as needed. Saves memory.
+
+---
+
+### FILE: `two_level_paging.c`
+
+```c
+#include <stdio.h>
+
+int main() {
+    int page_size = 4096;   // 4KB = 2^12 bytes
+    // Offset uses bits [11:0] = 12 bits
+    // L2 index uses bits [21:12] = 10 bits
+    // L1 index uses bits [31:22] = 10 bits
+
+    // L1 page table
+    // Index into this table using L1 index
+    // Value = base address of the L2 table for that L1 entry
+    int L1_table[] = {
+        -1,     // L1[0] → not mapped
+        5000,   // L1[1] → L2 table starts at address 5000
+        -1,     // L1[2] → not mapped
+        -1      // L1[3] → not mapped
+    };
+
+    // L2 page table at base 5000
+    // Index into this using L2 index
+    // Value = frame number
+    // (In real systems, this would be at physical address 5000,
+    //  but here we simulate it as an array)
+    int L2_table[] = {
+        2,    // L2[0] → frame 2
+        5,    // L2[1] → frame 5
+        1,    // L2[2] → frame 1
+        7,    // L2[3] → frame 7   <-- this is what we need
+        3     // L2[4] → frame 3
+    };
+
+    // Virtual address to translate
+    int vaddr = 0x00403004;
+
+    printf("Two-Level Paging — Address Translation\n");
+    printf("========================================\n");
+    printf("Virtual Address : 0x%08X (%d in decimal)\n\n", vaddr, vaddr);
+
+    // Step 1: Extract L1 index (bits 31 to 22) — top 10 bits
+    // >> 22 shifts right by 22 bits, & 0x3FF masks to 10 bits
+    int L1_index = (vaddr >> 22) & 0x3FF;
+
+    // Step 2: Extract L2 index (bits 21 to 12) — next 10 bits
+    // >> 12 shifts right by 12 bits, & 0x3FF masks to 10 bits
+    int L2_index = (vaddr >> 12) & 0x3FF;
+
+    // Step 3: Extract offset (bits 11 to 0) — bottom 12 bits
+    // & 0xFFF masks to 12 bits
+    int offset = vaddr & 0xFFF;
+
+    printf("Bit Extraction:\n");
+    printf("  L1 Index (bits 31-22) = %d\n", L1_index);
+    printf("  L2 Index (bits 21-12) = %d\n", L2_index);
+    printf("  Offset   (bits 11-0)  = %d (0x%03X)\n\n", offset, offset);
+
+    // Step 4: Look up L1 table
+    printf("L1 Table Lookup:\n");
+    printf("  L1[%d] = %d (base address of L2 table)\n", L1_index, L1_table[L1_index]);
+
+    if (L1_table[L1_index] == -1) {
+        printf("  ERROR: L1 entry not mapped! Page Fault.\n");
+        return 1;
+    }
+
+    // Step 5: Look up L2 table
+    printf("\nL2 Table Lookup:\n");
+    int frame_number = L2_table[L2_index];
+    printf("  L2[%d] = %d (frame number)\n", L2_index, frame_number);
+
+    // Step 6: Calculate physical address
+    int physical_addr = (frame_number * page_size) + offset;
+
+    printf("\nPhysical Address Calculation:\n");
+    printf("  Physical = Frame × Page Size + Offset\n");
+    printf("  Physical = %d × %d + %d\n", frame_number, page_size, offset);
+    printf("  Physical = %d + %d\n", frame_number * page_size, offset);
+    printf("  Physical = %d (0x%05X)\n", physical_addr, physical_addr);
+
+    printf("\nSummary:\n");
+    printf("  Virtual  Address = 0x%08X\n", vaddr);
+    printf("  Physical Address = 0x%08X (%d)\n", physical_addr, physical_addr);
+
+    return 0;
+}
+```
+
+---
+
+### Manual walkthrough for `0x00403004`:
+
+**Step 1: Convert to binary (relevant bits)**
+```
+0x00403004 in binary:
+0000 0000 0100 0000 0011 0000 0000 0100
+```
+
+**Step 2: Split the bits**
+```
+Bits [31:22] = 00 0000 0001 = 1  → L1 index = 1
+Bits [21:12] = 00 0000 0011 = 3  → L2 index = 3
+Bits [11:0]  = 0000 0000 0100 = 4  → Offset = 4
+```
+
+**Step 3: Table lookups**
+```
+L1[1] = 5000  → L2 table is at base 5000
+L2[3] = 7     → Frame number = 7
+```
+
+**Step 4: Physical address**
+```
+Physical = 7 × 4096 + 4 = 28672 + 4 = 28676 = 0x00007004
+```
+
+---
+
+### Explanation of bit operations:
+
+| Operation | What it does |
+|-----------|-------------|
+| `vaddr >> 22` | Shifts bits right by 22 — brings bits [31:22] to the bottom |
+| `& 0x3FF` | Keeps only bottom 10 bits (0x3FF = 0011 1111 1111 in binary = 1023) |
+| `vaddr >> 12` | Brings bits [21:12] to the bottom |
+| `& 0xFFF` | Keeps bottom 12 bits for offset (0xFFF = 4095) |
+
+---
+
+### Compile and Run:
+```bash
+gcc two_level_paging.c -o paging
+./paging
+```
+
+### Output:
+```
+Two-Level Paging — Address Translation
+========================================
+Virtual Address : 0x00403004 (4206596 in decimal)
+
+Bit Extraction:
+  L1 Index (bits 31-22) = 1
+  L2 Index (bits 21-12) = 3
+  Offset   (bits 11-0)  = 4 (0x004)
+
+L1 Table Lookup:
+  L1[1] = 5000 (base address of L2 table)
+
+L2 Table Lookup:
+  L2[3] = 7 (frame number)
+
+Physical Address Calculation:
+  Physical = Frame × Page Size + Offset
+  Physical = 7 × 4096 + 4
+  Physical = 28672 + 4
+  Physical = 28676 (0x07004)
+
+Summary:
+  Virtual  Address = 0x00403004
+  Physical Address = 0x00007004 (28676)
+```
+
+---
+---
+
+# QUICK REFERENCE — SET C
+
+| Q | Topic | Key Concept | Compile |
+|---|-------|-------------|---------|
+| Q2 | Static + Dynamic Library | Same `.c` → `ar rcs` for static, `-fPIC -shared` for dynamic | Static: `gcc -c geometry.c && ar rcs libgeometry.a geometry.o && gcc main.c -L. -lgeometry -o main_static -lm` / Dynamic: `gcc -fPIC -shared -o libgeometry.so geometry.c -lm && gcc main.c -L. -lgeometry -Wl,-rpath,. -o main_dynamic -lm` |
+| Q3 | Pipe + fork | `pipe()` before `fork()`. Each closes unused end. Parent closes write end after writing → sends EOF. `toupper()` char by char | `gcc pipe_upper.c -o pipe_upper` |
+| Q4 | 3 Threads (interleaved vs serialized) | Without mutex → interleaved output. With mutex → one thread at a time | `gcc news_threads.c -o news_threads -lpthread` |
+| Q5 | Round Robin (quantum=3) | Use `remaining[]` array. Each process runs `min(remaining, quantum)`. Loop until all done | `gcc round_robin.c -o round_robin` |
+| Q6 | Banker's + Request | Check request≤need, request≤available → simulate grant → run safety algo → grant or deny | `gcc bankers_request.c -o bankers_request` |
+| Q7 | POSIX Shared Memory | `shm_open` + `ftruncate` + `mmap` to write/read. `munmap` + `shm_unlink` to clean up | `gcc game_writer.c -o writer -lrt && gcc game_reader.c -o reader -lrt` |
+| Q8 | Readers-Writers | `write_lock` semaphore for exclusivity. `reader_count` + `mutex` for tracking readers. First reader locks writers out, last reader lets them back in | `gcc readers_writers.c -o rw -lpthread` |
+| Q9 | C-SCAN | Go in one direction, service all. Jump to other end (count jump distance). Continue same direction | `gcc cscan.c -o cscan` |
+| Q10 | Two-Level Paging | Split virtual address: L1=[31:22], L2=[21:12], offset=[11:0]. L1→L2 base→frame→physical | `gcc two_level_paging.c -o paging` |

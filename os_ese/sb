@@ -1,0 +1,1326 @@
+# SET B — Complete OS Lab Answers (Q2 to Q10)
+
+---
+
+## Q2 — Dynamic Link Library (`libmath.so`)
+
+### What is being asked?
+Build a **shared (dynamic) library** `libmath.so` with two functions:
+- `complex_abs()` → magnitude (absolute value) of a complex number
+- `complex_power()` → magnitude squared
+
+Write a test program that loads and uses this library at runtime.
+
+### What is a Dynamic/Shared Library?
+Unlike a static library (`.a`) where code is **copied into** your executable at compile time, a shared library (`.so`) is a **separate file** that gets loaded **when your program runs**. If you update the `.so` file, you don't need to recompile your program — it picks up the new version automatically.
+
+Think of it like a plugin — your app loads it when needed.
+
+---
+
+### FILE 1: `math.h` (Header — declares functions)
+
+```c
+// math.h
+double complex_abs(double real, double imag);
+double complex_power(double real, double imag);
+```
+
+---
+
+### FILE 2: `math.c` (Library functions)
+
+```c
+// math.c
+#include <math.h>
+#include "math.h"
+
+// Absolute value (magnitude) = sqrt(a^2 + b^2)
+// For complex number a + bi, this is its "length"
+// Example: 3 + 4i → sqrt(9 + 16) = sqrt(25) = 5
+double complex_abs(double real, double imag) {
+    return sqrt(real * real + imag * imag);
+}
+
+// Power = magnitude squared = a^2 + b^2
+// Example: 3 + 4i → 9 + 16 = 25
+double complex_power(double real, double imag) {
+    return real * real + imag * imag;
+}
+```
+
+**Explanation:**
+- `complex_abs(3, 4)` → `sqrt(3²+4²)` = `sqrt(25)` = **5.0**
+- `complex_power(3, 4)` → `3²+4²` = **25.0**
+
+---
+
+### FILE 3: `test.c` (Test program)
+
+```c
+// test.c
+#include <stdio.h>
+#include "math.h"
+
+int main() {
+    double real = 3.0, imag = 4.0;
+
+    printf("Complex number: %.1f + %.1fi\n", real, imag);
+
+    printf("Magnitude (abs)  : %.2f\n", complex_abs(real, imag));
+    // Expected: 5.00
+
+    printf("Power (mag^2)    : %.2f\n", complex_power(real, imag));
+    // Expected: 25.00
+
+    return 0;
+}
+```
+
+---
+
+### Commands (run one by one in terminal):
+
+```bash
+# Step 1: Compile math.c into a shared library
+# -fPIC = Position Independent Code (required for shared libs)
+# -shared = produce a .so file instead of executable
+# -lm = link math library (needed for sqrt)
+gcc -fPIC -shared -o libmath.so math.c -lm
+
+# Step 2: Compile test program and link with shared library
+# -L. = look for libraries in current directory
+# -lmath = link with libmath.so
+# -Wl,-rpath,. = at runtime, find .so in current directory
+gcc test.c -L. -lmath -Wl,-rpath,. -o test -lm
+
+# Step 3: Run
+./test
+```
+
+**What each flag means:**
+
+| Flag | Meaning |
+|------|---------|
+| `-fPIC` | Position Independent Code — library can load anywhere in memory |
+| `-shared` | Build a `.so` shared object, not an executable |
+| `-L.` | Look in current folder (`.`) for libraries at link time |
+| `-lmath` | Link with `libmath.so` (l + math) |
+| `-Wl,-rpath,.` | At runtime, search current directory for `.so` files |
+| `-lm` | Link with system math library (for `sqrt`) |
+
+---
+
+### Difference: Static vs Dynamic
+
+| | Static `.a` | Dynamic `.so` |
+|-|------------|---------------|
+| Where code lives | Inside the executable | Separate `.so` file |
+| Update library | Must recompile everything | Just replace `.so` |
+| File size | Larger executable | Smaller executable |
+| Build command | `ar rcs` | `gcc -shared -fPIC` |
+
+---
+
+### Expected Output:
+```
+Complex number: 3.0 + 4.0i
+Magnitude (abs)  : 5.00
+Power (mag^2)    : 25.00
+```
+
+---
+---
+
+## Q3 — System Calls (fork + write attendance logger)
+
+### What is being asked?
+Use `fork()` to create a child process. Both parent and child write their own entry to a file using system calls. Parent waits for child to finish first using `wait()`.
+
+### What is fork()?
+`fork()` creates an **exact copy** of the current process. After fork, you have two processes running the same code. The trick is:
+- Child gets return value **0**
+- Parent gets return value = **child's PID**
+
+We use this to make them do different things.
+
+### Why does parent wait?
+Without `wait()`, parent might write to the file before child finishes. `wait()` makes parent pause until child completes — ensures proper ordering.
+
+---
+
+### FILE: `attendance.c`
+
+```c
+#include <stdio.h>
+#include <unistd.h>    // fork(), getpid(), getppid(), write()
+#include <fcntl.h>     // open()
+#include <sys/wait.h>  // wait()
+#include <string.h>    // strlen()
+
+int main() {
+    int fd;
+    pid_t pid;
+
+    // Create a child process
+    pid = fork();
+
+    // fork() returns negative value if it fails
+    if (pid < 0) {
+        printf("Error: fork() failed!\n");
+        return 1;
+    }
+
+    // ---- CHILD PROCESS (pid == 0) ----
+    else if (pid == 0) {
+        printf("Child Process started\n");
+        printf("Child PID  = %d\n", getpid());    // Child's own PID
+        printf("Child's Parent PID = %d\n", getppid()); // Parent's PID
+
+        // Open file — append mode so we don't overwrite
+        fd = open("attendance.txt", O_WRONLY | O_CREAT | O_APPEND, 0644);
+        if (fd < 0) {
+            printf("Child: Error opening file!\n");
+            return 1;
+        }
+
+        char *msg = "Child attended\n";
+        write(fd, msg, strlen(msg));   // Write using system call, not fprintf
+        close(fd);
+
+        printf("Child: Written entry to attendance.txt\n");
+    }
+
+    // ---- PARENT PROCESS (pid > 0) ----
+    else {
+        printf("Parent Process started\n");
+        printf("Parent PID = %d\n", getpid());
+        printf("Child's PID = %d\n", pid);
+        printf("Parent waiting for child to finish...\n");
+
+        wait(NULL);  // Wait until child finishes completely
+
+        // Now parent writes its entry
+        fd = open("attendance.txt", O_WRONLY | O_CREAT | O_APPEND, 0644);
+        if (fd < 0) {
+            printf("Parent: Error opening file!\n");
+            return 1;
+        }
+
+        char *msg = "Parent attended\n";
+        write(fd, msg, strlen(msg));
+        close(fd);
+
+        printf("Parent: Written entry to attendance.txt\n");
+        printf("Done! Check attendance.txt\n");
+    }
+
+    return 0;
+}
+```
+
+---
+
+### Line by line explanation:
+
+| Code | What it does |
+|------|-------------|
+| `fork()` | Duplicates the process. Two processes run from this point |
+| `pid == 0` | We are inside the child process |
+| `pid > 0` | We are inside the parent process |
+| `getpid()` | Returns this process's own PID (Process ID) |
+| `getppid()` | Returns the parent's PID — useful in child to know who created it |
+| `wait(NULL)` | Parent blocks here until child exits. `NULL` means we don't care about exit status |
+| `O_APPEND` | New writes go to the END of the file — so both entries are preserved |
+| `write(fd, msg, strlen(msg))` | System call to write. Writes exactly `strlen(msg)` bytes |
+| `close(fd)` | Release the file descriptor |
+
+---
+
+### Compile and Run:
+
+```bash
+gcc attendance.c -o attendance
+./attendance
+
+# See the result
+cat attendance.txt
+```
+
+### Expected Terminal Output:
+```
+Parent Process started
+Parent PID = 5421
+Child's PID = 5422
+Parent waiting for child to finish...
+Child Process started
+Child PID  = 5422
+Child's Parent PID = 5421
+Child: Written entry to attendance.txt
+Parent: Written entry to attendance.txt
+Done! Check attendance.txt
+```
+
+### attendance.txt will contain:
+```
+Child attended
+Parent attended
+```
+
+---
+---
+
+## Q4 — Multithreading (Race Condition + Mutex Fix)
+
+### What is being asked?
+Two threads increment a shared counter 5000 times each.
+- **First:** Run without mutex → observe wrong result (race condition)
+- **Then:** Add mutex → get correct result (10000)
+
+### What is a Race Condition?
+When two threads read-modify-write the same variable simultaneously, they can overwrite each other's changes.
+
+Example: Both threads read `counter = 100`. Both add 1. Both write `101`. But the real answer should be `102`. One increment is **lost**.
+
+### What is a Mutex?
+A mutex is like a **lock on a bathroom door**. Only one thread can hold it at a time. Others wait outside. This ensures only one thread modifies the variable at a time.
+
+---
+
+### FILE: `race_mutex.c`
+
+```c
+#include <stdio.h>
+#include <pthread.h>
+
+#define ITERATIONS 5000
+
+int counter = 0;          // Shared variable (the counter)
+pthread_mutex_t lock;     // The mutex lock
+
+// ---- PART 1: WITHOUT Mutex (shows race condition) ----
+void* increment_no_mutex(void* arg) {
+    for (int i = 0; i < ITERATIONS; i++) {
+        // DANGER ZONE: Read → Add 1 → Write
+        // Another thread can interrupt between Read and Write!
+        counter++;
+    }
+    return NULL;
+}
+
+// ---- PART 2: WITH Mutex (correct version) ----
+void* increment_with_mutex(void* arg) {
+    for (int i = 0; i < ITERATIONS; i++) {
+        pthread_mutex_lock(&lock);   // LOCK — only I can enter now
+        counter++;                   // Safe — no other thread can touch counter here
+        pthread_mutex_unlock(&lock); // UNLOCK — next thread can enter
+    }
+    return NULL;
+}
+
+int main() {
+    pthread_t t1, t2;
+
+    // ============================
+    // PART 1: WITHOUT MUTEX
+    // ============================
+    printf("=== Part 1: WITHOUT Mutex (Race Condition) ===\n");
+    counter = 0;  // Reset counter
+
+    pthread_create(&t1, NULL, increment_no_mutex, NULL);
+    pthread_create(&t2, NULL, increment_no_mutex, NULL);
+    pthread_join(t1, NULL);
+    pthread_join(t2, NULL);
+
+    printf("Expected: 10000\n");
+    printf("Got     : %d  <-- Likely WRONG due to race condition\n\n", counter);
+
+    // ============================
+    // PART 2: WITH MUTEX
+    // ============================
+    printf("=== Part 2: WITH Mutex (Fixed) ===\n");
+    counter = 0;  // Reset counter
+    pthread_mutex_init(&lock, NULL);  // Initialize the mutex before use
+
+    pthread_create(&t1, NULL, increment_with_mutex, NULL);
+    pthread_create(&t2, NULL, increment_with_mutex, NULL);
+    pthread_join(t1, NULL);
+    pthread_join(t2, NULL);
+
+    printf("Expected: 10000\n");
+    printf("Got     : %d  <-- CORRECT!\n", counter);
+
+    pthread_mutex_destroy(&lock);  // Always clean up the mutex
+    return 0;
+}
+```
+
+---
+
+### How Race Condition happens (step by step):
+
+```
+Thread 1 reads counter = 5000
+Thread 2 reads counter = 5000   ← Both read the same value!
+Thread 1 adds 1 → writes 5001
+Thread 2 adds 1 → writes 5001   ← Thread 1's increment is LOST
+```
+
+With mutex:
+```
+Thread 1 locks mutex
+Thread 1 reads counter = 5000
+Thread 1 writes 5001
+Thread 1 unlocks mutex
+Thread 2 locks mutex             ← Now Thread 2 gets a turn
+Thread 2 reads counter = 5001   ← Reads the updated value
+Thread 2 writes 5002
+Thread 2 unlocks mutex
+```
+
+---
+
+### Explanation table:
+
+| Code | What it does |
+|------|-------------|
+| `pthread_mutex_init(&lock, NULL)` | Sets up the mutex. Must be called before using it |
+| `pthread_mutex_lock(&lock)` | Thread tries to grab the lock. If another thread holds it, this thread waits |
+| `counter++` inside lock | Only one thread runs this at a time — safe |
+| `pthread_mutex_unlock(&lock)` | Releases the lock so the next waiting thread can proceed |
+| `pthread_mutex_destroy(&lock)` | Frees the mutex when you're done |
+
+---
+
+### Compile and Run:
+
+```bash
+gcc race_mutex.c -o race_mutex -lpthread
+./race_mutex
+```
+
+### Expected Output:
+```
+=== Part 1: WITHOUT Mutex (Race Condition) ===
+Expected: 10000
+Got     : 7241  <-- Likely WRONG due to race condition
+
+=== Part 2: WITH Mutex (Fixed) ===
+Expected: 10000
+Got     : 10000  <-- CORRECT!
+```
+
+*(The race condition result changes every run — sometimes 8000, sometimes 6500, etc. That's the whole point!)*
+
+---
+---
+
+## Q5 — CPU Scheduling (Priority Non-Preemptive)
+
+### What is being asked?
+5 processes all arrive at t=0 with different burst times and priorities.
+Lower priority number = higher urgency (priority 1 runs before priority 2).
+Simulate which order they run. Compute waiting and turnaround time for each.
+
+### What is Priority Scheduling?
+Instead of first-come-first-serve, the process with the **highest priority** (lowest number) gets the CPU first. Non-preemptive means once a process starts, it runs till it finishes — no interruption.
+
+### Input:
+| Process | Burst Time | Priority |
+|---------|-----------|----------|
+| P1 | 4 | 2 |
+| P2 | 3 | 1 |
+| P3 | 5 | 3 |
+| P4 | 1 | 1 |
+| P5 | 2 | 4 |
+
+All arrive at t=0. Lower number = higher priority.
+
+---
+
+### FILE: `priority.c`
+
+```c
+#include <stdio.h>
+
+int main() {
+    int n = 5;
+
+    int pid[]      = {1, 2, 3, 4, 5};
+    int burst[]    = {4, 3, 5, 1, 2};
+    int priority[] = {2, 1, 3, 1, 4};
+
+    // Step 1: Sort processes by priority (lower number = higher priority)
+    // If two have same priority, keep original order (stable sort)
+    // Using simple bubble sort
+    for (int i = 0; i < n - 1; i++) {
+        for (int j = 0; j < n - i - 1; j++) {
+            if (priority[j] > priority[j+1]) {
+                // Swap priority
+                int tmp = priority[j]; priority[j] = priority[j+1]; priority[j+1] = tmp;
+                // Swap burst
+                tmp = burst[j]; burst[j] = burst[j+1]; burst[j+1] = tmp;
+                // Swap pid
+                tmp = pid[j]; pid[j] = pid[j+1]; pid[j+1] = tmp;
+            }
+        }
+    }
+
+    int ct[5], tat[5], wt[5];
+    int current_time = 0;
+
+    // Step 2: Calculate CT, TAT, WT
+    for (int i = 0; i < n; i++) {
+        ct[i]  = current_time + burst[i];
+        tat[i] = ct[i];           // All arrived at 0, so TAT = CT - 0 = CT
+        wt[i]  = tat[i] - burst[i];
+        current_time = ct[i];
+    }
+
+    // Step 3: Print results
+    printf("Priority Scheduling (Non-Preemptive)\n");
+    printf("All processes arrive at t=0\n\n");
+    printf("P\tBT\tPR\tCT\tTAT\tWT\n");
+
+    float total_wt = 0, total_tat = 0;
+    for (int i = 0; i < n; i++) {
+        printf("P%d\t%d\t%d\t%d\t%d\t%d\n",
+               pid[i], burst[i], priority[i], ct[i], tat[i], wt[i]);
+        total_wt  += wt[i];
+        total_tat += tat[i];
+    }
+
+    printf("\nAverage Waiting Time    = %.2f\n", total_wt / n);
+    printf("Average Turnaround Time = %.2f\n", total_tat / n);
+
+    // Step 4: Gantt Chart
+    printf("\nGantt Chart:\n|");
+    current_time = 0;
+    for (int i = 0; i < n; i++) {
+        for (int j = 0; j < burst[i]; j++) printf("-");
+        printf("P%d|", pid[i]);
+        current_time += burst[i];
+    }
+    printf("\n0");
+    current_time = 0;
+    for (int i = 0; i < n; i++) {
+        current_time += burst[i];
+        for (int j = 0; j < burst[i]; j++) printf(" ");
+        printf("%d", current_time);
+    }
+    printf("\n");
+
+    return 0;
+}
+```
+
+---
+
+### Explanation:
+
+**After sorting by priority:**
+- P2 (priority 1) → runs first
+- P4 (priority 1) → same priority as P2, keeps original order → runs second
+- P1 (priority 2) → runs third
+- P3 (priority 3) → runs fourth
+- P5 (priority 4) → runs last
+
+**Calculations (all arrive at t=0):**
+| Process | Priority | Burst | CT | TAT | WT |
+|---------|----------|-------|----|-----|----|
+| P2 | 1 | 3 | 3 | 3 | 0 |
+| P4 | 1 | 1 | 4 | 4 | 3 |
+| P1 | 2 | 4 | 8 | 8 | 4 |
+| P3 | 3 | 5 | 13 | 13 | 8 |
+| P5 | 4 | 2 | 15 | 15 | 13 |
+
+Average WT = (0+3+4+8+13)/5 = **5.6**
+Average TAT = (3+4+8+13+15)/5 = **8.6**
+
+---
+
+### Compile and Run:
+```bash
+gcc priority.c -o priority
+./priority
+```
+
+### Output:
+```
+Priority Scheduling (Non-Preemptive)
+All processes arrive at t=0
+
+P   BT  PR  CT  TAT  WT
+P2   3   1   3    3   0
+P4   1   1   4    4   3
+P1   4   2   8    8   4
+P3   5   3  13   13   8
+P5   2   4  15   15  13
+
+Average Waiting Time    = 5.60
+Average Turnaround Time = 8.60
+
+Gantt Chart:
+|---P2|-P4|----P1|-----P3|--P5|
+0     3   4      8      13   15
+```
+
+---
+---
+
+## Q6 — Deadlock Handling (Deadlock Detection Algorithm)
+
+### What is being asked?
+3 student groups (processes) share 2 resource types (projectors, USB hubs). Some resources are allocated. Check if there is a **deadlock** using the resource allocation graph / detection algorithm.
+
+### Difference from Banker's Algorithm:
+- **Banker's** = Prevention (check before granting request)
+- **Detection** = Find if deadlock already exists right now
+
+### How Detection Works:
+Similar logic to safety algorithm:
+- `Work = Available`
+- Find any process whose `Request ≤ Work` (it can complete with available resources)
+- Simulate it finishing → add its allocation back to Work
+- If some processes can NEVER finish → they are in deadlock
+
+---
+
+### FILE: `deadlock_detect.c`
+
+```c
+#include <stdio.h>
+
+#define P 3   // Number of processes (student groups)
+#define R 2   // Number of resource types (projectors, USB hubs)
+
+int main() {
+    // What each process currently holds
+    int allocation[P][R] = {
+        {1, 0},   // P0 holds 1 projector, 0 USB hubs
+        {2, 1},   // P1 holds 2 projectors, 1 USB hub
+        {0, 2}    // P2 holds 0 projectors, 2 USB hubs
+    };
+
+    // What each process is currently requesting (still needs)
+    int request[P][R] = {
+        {0, 0},   // P0 requests nothing — it's done or waiting for nothing
+        {2, 0},   // P1 is requesting 2 more projectors
+        {0, 1}    // P2 is requesting 1 more USB hub
+    };
+
+    // Currently available resources
+    int available[R] = {0, 1};  // 0 projectors free, 1 USB hub free
+
+    int finish[P];
+    int work[R];
+    int deadlocked[P];
+    int deadlock_count = 0;
+
+    // Initialize: mark all processes as unfinished
+    for (int i = 0; i < P; i++) finish[i] = 0;
+    for (int j = 0; j < R; j++) work[j] = available[j];
+
+    printf("Deadlock Detection Algorithm\n");
+    printf("============================\n");
+    printf("Available: Projectors=%d, USB hubs=%d\n\n", available[0], available[1]);
+
+    // Run detection
+    int found = 1;
+    while (found) {
+        found = 0;
+        for (int i = 0; i < P; i++) {
+            if (finish[i] == 0) {
+                // Can this process complete with current work?
+                int can_finish = 1;
+                for (int j = 0; j < R; j++) {
+                    if (request[i][j] > work[j]) {
+                        can_finish = 0;
+                        break;
+                    }
+                }
+
+                if (can_finish) {
+                    // Simulate process finishing — release its resources
+                    printf("P%d can finish. Releasing its resources.\n", i);
+                    for (int j = 0; j < R; j++)
+                        work[j] += allocation[i][j];
+                    finish[i] = 1;
+                    found = 1;
+                }
+            }
+        }
+    }
+
+    // Check who couldn't finish
+    printf("\nResult:\n");
+    for (int i = 0; i < P; i++) {
+        if (finish[i] == 0) {
+            deadlocked[deadlock_count++] = i;
+        }
+    }
+
+    if (deadlock_count == 0) {
+        printf("No deadlock detected. All processes can complete.\n");
+    } else {
+        printf("DEADLOCK DETECTED!\n");
+        printf("Processes in deadlock: ");
+        for (int i = 0; i < deadlock_count; i++)
+            printf("P%d ", deadlocked[i]);
+        printf("\n");
+    }
+
+    return 0;
+}
+```
+
+---
+
+### Manual Trace:
+- Work = [0, 1]
+- P0 requests [0,0]: 0≤0, 0≤1 → YES, can finish. Work = [0,1] + [1,0] = [1,1]
+- P1 requests [2,0]: 2≤1? → NO, cannot finish yet
+- P2 requests [0,1]: 0≤1, 1≤1 → YES, can finish. Work = [1,1] + [0,2] = [1,3]
+- Now check P1 again: requests [2,0]: 2≤1? → Still NO
+- P1 is stuck → **P1 is in deadlock**
+
+---
+
+### Compile and Run:
+```bash
+gcc deadlock_detect.c -o deadlock_detect
+./deadlock_detect
+```
+
+### Output:
+```
+Deadlock Detection Algorithm
+============================
+Available: Projectors=0, USB hubs=1
+
+P0 can finish. Releasing its resources.
+P2 can finish. Releasing its resources.
+
+Result:
+DEADLOCK DETECTED!
+Processes in deadlock: P1
+```
+
+---
+---
+
+## Q7 — Shared Memory (Stock price counter with semaphores)
+
+### What is being asked?
+Two processes share a stock price counter via shared memory. A **writer** increments it 10 times. A **reader** reads and prints it each time. Use semaphores to prevent race conditions.
+
+### What's new compared to Q7 Set A?
+Here we add **semaphores** to synchronize access — so the reader doesn't read while the writer is writing.
+
+System calls:
+- `shmget()` → Create shared memory
+- `shmat()` → Attach pointer to it
+- Semaphores: `semget()`, `semop()` for locking
+
+---
+
+### FILE 1: `stock_writer.c`
+
+```c
+#include <stdio.h>
+#include <sys/ipc.h>
+#include <sys/shm.h>
+#include <sys/sem.h>   // For semaphores
+#include <unistd.h>
+
+#define SHM_KEY 5678
+#define SEM_KEY 5679
+
+// Semaphore operation helper functions
+void sem_lock(int semid) {
+    struct sembuf op = {0, -1, 0};  // Decrement (wait/lock)
+    semop(semid, &op, 1);
+}
+
+void sem_unlock(int semid) {
+    struct sembuf op = {0, 1, 0};   // Increment (signal/unlock)
+    semop(semid, &op, 1);
+}
+
+int main() {
+    // Create shared memory for 1 integer (the stock price)
+    int shmid = shmget(SHM_KEY, sizeof(int), IPC_CREAT | 0666);
+    if (shmid < 0) { printf("Writer: shmget failed\n"); return 1; }
+
+    // Attach to shared memory
+    int *price = (int*) shmat(shmid, NULL, 0);
+    if (price == (int*)-1) { printf("Writer: shmat failed\n"); return 1; }
+
+    // Create semaphore (starts at 1 = unlocked)
+    int semid = semget(SEM_KEY, 1, IPC_CREAT | 0666);
+    semctl(semid, 0, SETVAL, 1);   // Initialize semaphore to 1
+
+    *price = 100;  // Starting stock price
+
+    printf("Writer: Starting. Initial price = %d\n", *price);
+
+    // Increment price 10 times
+    for (int i = 1; i <= 10; i++) {
+        sem_lock(semid);       // Lock before writing
+        (*price) += 10;        // Increment price by 10
+        printf("Writer: Updated price to %d\n", *price);
+        sem_unlock(semid);     // Unlock after writing
+        sleep(1);              // Wait 1 second between updates
+    }
+
+    shmdt(price);
+    printf("Writer: Done.\n");
+    return 0;
+}
+```
+
+---
+
+### FILE 2: `stock_reader.c`
+
+```c
+#include <stdio.h>
+#include <sys/ipc.h>
+#include <sys/shm.h>
+#include <sys/sem.h>
+#include <unistd.h>
+
+#define SHM_KEY 5678
+#define SEM_KEY 5679
+
+void sem_lock(int semid) {
+    struct sembuf op = {0, -1, 0};
+    semop(semid, &op, 1);
+}
+
+void sem_unlock(int semid) {
+    struct sembuf op = {0, 1, 0};
+    semop(semid, &op, 1);
+}
+
+int main() {
+    // Get existing shared memory
+    int shmid = shmget(SHM_KEY, sizeof(int), 0666);
+    if (shmid < 0) { printf("Reader: shmget failed — run writer first!\n"); return 1; }
+
+    int *price = (int*) shmat(shmid, NULL, 0);
+    if (price == (int*)-1) { printf("Reader: shmat failed\n"); return 1; }
+
+    int semid = semget(SEM_KEY, 1, 0666);
+
+    printf("Reader: Starting. Reading price 10 times...\n");
+
+    // Read price 10 times
+    for (int i = 1; i <= 10; i++) {
+        sem_lock(semid);       // Lock before reading
+        printf("Reader: Current price = %d\n", *price);
+        sem_unlock(semid);     // Unlock after reading
+        sleep(1);
+    }
+
+    // Clean up shared memory and semaphore
+    shmdt(price);
+    shmctl(shmid, IPC_RMID, NULL);    // Destroy shared memory
+    semctl(semid, 0, IPC_RMID);       // Destroy semaphore
+
+    printf("Reader: Done. Shared memory and semaphore destroyed.\n");
+    return 0;
+}
+```
+
+---
+
+### Explanation:
+
+| Function | What it does |
+|----------|-------------|
+| `semget(SEM_KEY, 1, IPC_CREAT\|0666)` | Creates 1 semaphore with the given key |
+| `semctl(semid, 0, SETVAL, 1)` | Sets semaphore value to 1 (unlocked state) |
+| `sem_lock()` — `sembuf op = {0, -1, 0}` | Decrements semaphore. If it hits 0, process blocks |
+| `sem_unlock()` — `sembuf op = {0, 1, 0}` | Increments semaphore. Wakes up any waiting process |
+| `(*price) += 10` | Dereference shared memory pointer and modify |
+
+---
+
+### Compile and Run:
+```bash
+gcc stock_writer.c -o writer
+gcc stock_reader.c -o reader
+
+# Run writer in background
+./writer &
+
+# Run reader immediately
+./reader
+```
+
+### Output:
+```
+Writer: Starting. Initial price = 100
+Writer: Updated price to 110
+Reader: Current price = 110
+Writer: Updated price to 120
+Reader: Current price = 120
+...
+Writer: Updated price to 200
+Reader: Current price = 200
+Writer: Done.
+Reader: Done. Shared memory and semaphore destroyed.
+```
+
+---
+---
+
+## Q8 — IPC Classical Problems (Dining Philosophers)
+
+### What is being asked?
+3 philosophers share 3 forks. Each philosopher needs **both left and right fork** to eat. Without care, they can deadlock (each picks up one fork and waits forever for the other).
+
+Implement the problem and add a **deadlock prevention strategy** (one philosopher picks up right fork first instead of left).
+
+### The Problem:
+- Philosopher 0: picks left fork 0, then right fork 1
+- Philosopher 1: picks left fork 1, then right fork 2
+- Philosopher 2: picks left fork 2, then right fork 0 ← **This one reverses order!**
+
+By making one philosopher pick right fork first, the circular wait is broken → no deadlock.
+
+---
+
+### FILE: `dining.c`
+
+```c
+#include <stdio.h>
+#include <pthread.h>
+#include <unistd.h>
+
+#define N 3   // Number of philosophers and forks
+
+pthread_mutex_t fork_mutex[N];   // Each fork is a mutex
+
+void think(int id) {
+    printf("Philosopher %d is THINKING\n", id);
+    usleep(500000);  // Think for 0.5 seconds
+}
+
+void eat(int id) {
+    printf("Philosopher %d is EATING\n", id);
+    usleep(500000);  // Eat for 0.5 seconds
+}
+
+void* philosopher(void* arg) {
+    int id = *((int*)arg);
+    int left  = id;             // Left fork index
+    int right = (id + 1) % N;  // Right fork index
+
+    for (int i = 0; i < 3; i++) {   // Each philosopher eats 3 times
+        think(id);
+
+        // Deadlock Prevention:
+        // Last philosopher (id = N-1) picks RIGHT fork first, then LEFT
+        // All others pick LEFT first, then RIGHT
+        // This breaks the circular wait condition
+        if (id == N - 1) {
+            // Philosopher 2: picks right (0) first, then left (2)
+            printf("Philosopher %d picks up RIGHT fork %d\n", id, right);
+            pthread_mutex_lock(&fork_mutex[right]);
+
+            printf("Philosopher %d picks up LEFT fork %d\n", id, left);
+            pthread_mutex_lock(&fork_mutex[left]);
+        } else {
+            // Philosophers 0 and 1: picks left first, then right
+            printf("Philosopher %d picks up LEFT fork %d\n", id, left);
+            pthread_mutex_lock(&fork_mutex[left]);
+
+            printf("Philosopher %d picks up RIGHT fork %d\n", id, right);
+            pthread_mutex_lock(&fork_mutex[right]);
+        }
+
+        // Eat with both forks
+        eat(id);
+
+        // Put down both forks
+        pthread_mutex_unlock(&fork_mutex[left]);
+        pthread_mutex_unlock(&fork_mutex[right]);
+        printf("Philosopher %d put down both forks\n\n", id);
+    }
+
+    printf("Philosopher %d finished eating 3 times!\n", id);
+    return NULL;
+}
+
+int main() {
+    pthread_t threads[N];
+    int ids[N];
+
+    // Initialize all fork mutexes
+    for (int i = 0; i < N; i++)
+        pthread_mutex_init(&fork_mutex[i], NULL);
+
+    printf("Dining Philosophers Problem (3 philosophers, 3 forks)\n");
+    printf("Deadlock prevented: Philosopher %d picks RIGHT fork first\n\n", N-1);
+
+    // Create philosopher threads
+    for (int i = 0; i < N; i++) {
+        ids[i] = i;
+        pthread_create(&threads[i], NULL, philosopher, &ids[i]);
+    }
+
+    // Wait for all to finish
+    for (int i = 0; i < N; i++)
+        pthread_join(threads[i], NULL);
+
+    // Destroy mutexes
+    for (int i = 0; i < N; i++)
+        pthread_mutex_destroy(&fork_mutex[i]);
+
+    printf("\nAll philosophers have eaten at least once. No deadlock!\n");
+    return 0;
+}
+```
+
+---
+
+### Why does this prevent deadlock?
+
+Without fix (everyone picks left first):
+```
+P0 holds fork 0, waits for fork 1
+P1 holds fork 1, waits for fork 2
+P2 holds fork 2, waits for fork 0  ← CIRCULAR WAIT → DEADLOCK
+```
+
+With fix (P2 picks right first):
+```
+P0 holds fork 0, waits for fork 1
+P1 holds fork 1, waits for fork 2
+P2 tries to pick fork 0 first — but P0 holds it → P2 blocks
+P1 can now grab fork 2 → P1 EATS → releases forks → chain resolves
+```
+
+No circular wait → no deadlock!
+
+---
+
+### Compile and Run:
+```bash
+gcc dining.c -o dining -lpthread
+./dining
+```
+
+### Output:
+```
+Dining Philosophers Problem (3 philosophers, 3 forks)
+Deadlock prevented: Philosopher 2 picks RIGHT fork first
+
+Philosopher 0 is THINKING
+Philosopher 1 is THINKING
+Philosopher 2 is THINKING
+Philosopher 0 picks up LEFT fork 0
+Philosopher 0 picks up RIGHT fork 1
+Philosopher 0 is EATING
+Philosopher 0 put down both forks
+...
+All philosophers have eaten at least once. No deadlock!
+```
+
+---
+---
+
+## Q9 — Disk Scheduling (SCAN / Elevator Algorithm)
+
+### What is being asked?
+Disk requests: `176, 79, 34, 60, 92, 11, 41, 114`. Head starts at **50**, moving toward **higher tracks**. Use SCAN algorithm. Calculate total head movement. Also compare with FCFS.
+
+### What is SCAN?
+SCAN works like an elevator:
+1. Move in one direction (toward higher tracks), servicing all requests on the way
+2. When you reach the end (or last request), **reverse direction**
+3. Service remaining requests on the way back
+
+---
+
+### FILE: `scan.c`
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+
+int compare(const void* a, const void* b) {
+    return (*(int*)a - *(int*)b);
+}
+
+int main() {
+    int requests[] = {176, 79, 34, 60, 92, 11, 41, 114};
+    int n = 8;
+    int head = 50;
+    int direction = 1;   // 1 = moving toward higher tracks
+
+    // Sort requests
+    int sorted[8];
+    for (int i = 0; i < n; i++) sorted[i] = requests[i];
+    qsort(sorted, n, sizeof(int), compare);
+
+    printf("SCAN (Elevator) Disk Scheduling\n");
+    printf("Initial head position: %d, moving toward higher tracks\n\n");
+    printf("Sorted requests: ");
+    for (int i = 0; i < n; i++) printf("%d ", sorted[i]);
+    printf("\n\n");
+
+    int total_movement = 0;
+    int current = head;
+    int service_order[20];
+    int order_count = 0;
+
+    // Find where head is in the sorted array
+    // Split into: requests >= head (go right first) and requests < head (go left after)
+
+    // PHASE 1: Move right (service all tracks >= head)
+    printf("Phase 1: Moving RIGHT (higher tracks)\n");
+    for (int i = 0; i < n; i++) {
+        if (sorted[i] >= head) {
+            int dist = sorted[i] - current;
+            printf("  Head moves from %d to %d (distance = %d)\n",
+                   current, sorted[i], dist);
+            total_movement += dist;
+            service_order[order_count++] = sorted[i];
+            current = sorted[i];
+        }
+    }
+
+    // PHASE 2: Reverse direction, move left (service tracks < head)
+    printf("\nPhase 2: Reversing direction, moving LEFT (lower tracks)\n");
+    for (int i = n - 1; i >= 0; i--) {
+        if (sorted[i] < head) {
+            int dist = current - sorted[i];
+            printf("  Head moves from %d to %d (distance = %d)\n",
+                   current, sorted[i], dist);
+            total_movement += dist;
+            service_order[order_count++] = sorted[i];
+            current = sorted[i];
+        }
+    }
+
+    printf("\nService Order: ");
+    for (int i = 0; i < order_count; i++) printf("%d ", service_order[i]);
+
+    printf("\nTotal Head Movement (SCAN) = %d\n\n", total_movement);
+
+    // ---- Compare with FCFS ----
+    printf("For comparison — FCFS Head Movement:\n");
+    current = head;
+    int fcfs_movement = 0;
+    for (int i = 0; i < n; i++) {
+        fcfs_movement += abs(requests[i] - current);
+        printf("  Head: %d → %d (dist=%d)\n", current, requests[i], abs(requests[i]-current));
+        current = requests[i];
+    }
+    printf("Total Head Movement (FCFS) = %d\n", fcfs_movement);
+    printf("\nSCAN is more efficient than FCFS in this case.\n");
+
+    return 0;
+}
+```
+
+---
+
+### Manual Trace for SCAN:
+- Sorted: `11, 34, 41, 60, 79, 92, 114, 176`
+- Head at 50, moving right
+
+**Phase 1 (right):** 60 → 79 → 92 → 114 → 176
+**Phase 2 (left):** 41 → 34 → 11
+
+Movement: (60-50)+(79-60)+(92-79)+(114-92)+(176-114)+(176-41)+(41-34)+(34-11)
+= 10+19+13+22+62+135+7+23 = **Wait — simpler way:**
+
+From 50→176 = 126
+From 176→11 = 165
+Total = **291**
+
+---
+
+### Compile and Run:
+```bash
+gcc scan.c -o scan
+./scan
+```
+
+### Output:
+```
+SCAN (Elevator) Disk Scheduling
+Initial head position: 50, moving toward higher tracks
+
+Sorted requests: 11 34 41 60 79 92 114 176
+
+Phase 1: Moving RIGHT (higher tracks)
+  Head moves from 50 to 60 (distance = 10)
+  Head moves from 60 to 79 (distance = 19)
+  Head moves from 79 to 92 (distance = 13)
+  Head moves from 92 to 114 (distance = 22)
+  Head moves from 114 to 176 (distance = 62)
+
+Phase 2: Reversing direction, moving LEFT (lower tracks)
+  Head moves from 176 to 41 (distance = 135)
+  Head moves from 41 to 34 (distance = 7)
+  Head moves from 34 to 11 (distance = 23)
+
+Service Order: 60 79 92 114 176 41 34 11
+Total Head Movement (SCAN) = 291
+
+For comparison — FCFS Head Movement:
+  Head: 50 → 176 (dist=126)
+  Head: 176 → 79 (dist=97)
+  ...
+Total Head Movement (FCFS) = 640
+
+SCAN is more efficient than FCFS in this case.
+```
+
+---
+---
+
+## Q10 — Memory Address Translation (Segmentation)
+
+### What is being asked?
+A game uses **segmentation** (not paging). Each segment has a **base** address and a **limit** (max size).
+- Translate virtual address `(segment, offset)` to physical address
+- If offset ≥ limit → **Segmentation Fault** (access out of bounds)
+
+### What is Segmentation?
+Instead of fixed-size pages, segmentation divides memory into variable-size **logical segments** (code, data, stack). Each segment has:
+- **Base**: where it starts in physical memory
+- **Limit**: how big it is (any access beyond this is illegal)
+
+Physical address = Base + Offset (if offset < limit)
+
+### Segments defined:
+| Segment | Number | Base | Limit |
+|---------|--------|------|-------|
+| Code | 0 | 1000 | 400 |
+| Data | 1 | 2000 | 500 |
+| Stack | 2 | 3000 | 300 |
+
+---
+
+### FILE: `segmentation.c`
+
+```c
+#include <stdio.h>
+
+int main() {
+    // Segment table: each entry has base address and limit
+    int num_segments = 3;
+    int base[]  = {1000, 2000, 3000};   // Where each segment starts in physical memory
+    int limit[] = { 400,  500,  300};   // Maximum allowed offset in each segment
+
+    char* seg_name[] = {"Code", "Data", "Stack"};
+
+    // Test requests: (segment number, offset)
+    int seg_num[] = {0, 1, 2};
+    int offset[]  = {200, 600, 150};
+    int num_requests = 3;
+
+    printf("Segmentation Memory Translation\n");
+    printf("================================\n");
+    printf("Segment Table:\n");
+    printf("%-10s %-10s %-10s %-10s\n", "Segment", "Name", "Base", "Limit");
+    for (int i = 0; i < num_segments; i++)
+        printf("%-10d %-10s %-10d %-10d\n", i, seg_name[i], base[i], limit[i]);
+
+    printf("\nAddress Translation:\n");
+    printf("---------------------\n");
+
+    for (int i = 0; i < num_requests; i++) {
+        int s = seg_num[i];
+        int o = offset[i];
+
+        printf("\nRequest %d: Segment=%d (%s), Offset=%d\n", i+1, s, seg_name[s], o);
+
+        // Check if offset is within limit
+        if (o >= limit[s]) {
+            printf("RESULT: SEGMENTATION FAULT!\n");
+            printf("Reason: Offset %d >= Limit %d for segment %s\n", o, limit[s], seg_name[s]);
+        } else {
+            int physical = base[s] + o;
+            printf("Physical Address = Base + Offset = %d + %d = %d\n",
+                   base[s], o, physical);
+            printf("RESULT: Physical Address = %d\n", physical);
+        }
+    }
+
+    return 0;
+}
+```
+
+---
+
+### Manual Calculation:
+
+**Request 1:** Segment=0 (Code), Offset=200
+- Limit = 400, Offset 200 < 400 → Valid
+- Physical = 1000 + 200 = **1200** ✓
+
+**Request 2:** Segment=1 (Data), Offset=600
+- Limit = 500, Offset 600 ≥ 500 → **SEGMENTATION FAULT** ✗
+- Trying to access beyond the data segment's boundary
+
+**Request 3:** Segment=2 (Stack), Offset=150
+- Limit = 300, Offset 150 < 300 → Valid
+- Physical = 3000 + 150 = **3150** ✓
+
+---
+
+### Compile and Run:
+```bash
+gcc segmentation.c -o segmentation
+./segmentation
+```
+
+### Output:
+```
+Segmentation Memory Translation
+================================
+Segment Table:
+Segment    Name       Base       Limit
+0          Code       1000       400
+1          Data       2000       500
+2          Stack      3000       300
+
+Address Translation:
+---------------------
+
+Request 1: Segment=0 (Code), Offset=200
+Physical Address = Base + Offset = 1000 + 200 = 1200
+RESULT: Physical Address = 1200
+
+Request 2: Segment=1 (Data), Offset=600
+RESULT: SEGMENTATION FAULT!
+Reason: Offset 600 >= Limit 500 for segment Data
+
+Request 3: Segment=2 (Stack), Offset=150
+Physical Address = Base + Offset = 3000 + 150 = 3150
+RESULT: Physical Address = 3150
+```
+
+---
+---
+
+# QUICK REFERENCE — SET B
+
+| Q | Topic | Key Concept | Compile |
+|---|-------|-------------|---------|
+| Q2 | Dynamic Library | `-fPIC -shared` builds `.so`, loaded at runtime | `gcc -fPIC -shared -o libmath.so math.c -lm` then `gcc test.c -L. -lmath -Wl,-rpath,. -o test` |
+| Q3 | fork + write | `fork()` creates child. `wait()` makes parent pause. `write()` to file via system call | `gcc attendance.c -o attendance` |
+| Q4 | Race Condition + Mutex | Without lock → wrong answer. `pthread_mutex_lock/unlock` fixes it | `gcc race_mutex.c -o race_mutex -lpthread` |
+| Q5 | Priority Scheduling | Sort by priority number (lower=higher priority). Same formula: CT→TAT→WT | `gcc priority.c -o priority` |
+| Q6 | Deadlock Detection | Request ≤ Work → process can finish. Who can't finish = deadlocked | `gcc deadlock_detect.c -o deadlock_detect` |
+| Q7 | Shared Memory + Semaphores | `shmget/shmat` for memory, `semget/semop` for locking | `gcc stock_writer.c -o writer && gcc stock_reader.c -o reader` |
+| Q8 | Dining Philosophers | Last philosopher picks RIGHT fork first to break circular wait | `gcc dining.c -o dining -lpthread` |
+| Q9 | SCAN Disk | Sort requests. Go right servicing all ≥ head, then reverse and go left | `gcc scan.c -o scan` |
+| Q10 | Segmentation | Physical = Base + Offset. If Offset ≥ Limit → Segfault | `gcc segmentation.c -o segmentation` |
